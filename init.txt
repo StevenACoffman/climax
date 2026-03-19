@@ -1,0 +1,12 @@
+Initialize (climax init) will create a new application, with the appropriate structure for a Climax-based CLI application.
+
+Climax init must be run inside of a go module (please run "go mod init <MODNAME>" first)
+
+Usage:
+  climax-cli init [path] [flags]
+
+Aliases:
+  init, initialize, initialise, create
+
+Flags:
+  -h, --help   help for init

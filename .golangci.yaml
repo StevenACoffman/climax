@@ -1,0 +1,263 @@
+# All settings can be found here https://github.com/golangci/golangci-lint/blob/HEAD/.golangci.reference.yml
+version: "2"
+# golangci-lint configuration for the climax project.
+# Enforces the guidelines in rules.md and spec.md.
+
+formatters:
+  enable:
+    - golines
+    - gofumpt
+    - gci
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/StevenACoffman)
+    golines:
+      # Target maximum line length.
+      # Default: 100
+      max-len: 100
+      shorten-comments: true
+  exclusions:
+    paths:
+      - generated
+      - node_modules
+
+linters:
+  default: none
+  enable:
+    # ── correctness ──────────────────────────────────────────────────────────
+    - errcheck        # all errors must be handled
+    - govet           # go vet checks
+    - staticcheck     # SA/S/QF/ST checks
+    - ineffassign     # detect ineffectual assignments
+    - unused          # detect unused code
+    - reassign        # no reassigning package-level sentinels (io.EOF, Err*)
+    - nilerr          # don't return nil on a non-nil error value
+    - nilnil          # never return (nil, nil) — rules.md
+    - wrapcheck       # errors from external packages must be wrapped — rules.md
+    # ── style / architecture ─────────────────────────────────────────────────
+    - revive          # general Go style (error-strings, exported, var-naming, …)
+    - gochecknoglobals # no package-level mutable state — rules.md
+    - gochecknoinits  # no init() functions — rules.md
+    - unparam         # detect unused function parameters
+    - funcorder       # exported funcs before unexported — spec.md / Ben Johnson
+    - decorder        # const/var/type/func declaration order — rules.md
+    - funlen          # keep functions short — rules.md
+    - maintidx        # maintainability index floor
+    - iface           # minimal interfaces; accept iface, return concrete — rules.md
+    - gosec           # security checks
+    # ── context ──────────────────────────────────────────────────────────────
+    - noctx           # no http.Get/Head without context
+    - contextcheck    # context must propagate through call chains
+    # ── testing ──────────────────────────────────────────────────────────────
+    - testpackage     # tests in package_test (black-box) — rules.md
+    - thelper         # t.Helper() at top of test helper funcs — rules.md
+    # ── dependency hygiene ───────────────────────────────────────────────────
+    - depguard        # ban CLI frameworks (cobra, urfave/cli, pflag) — spec.md
+    - forbidigo       # ban os.Exit outside main; ban fmt.Print* in cmds — spec.md
+    # ── nolint hygiene ───────────────────────────────────────────────────────
+    - nolintlint      # require specific, explained nolint directives
+
+  settings:
+
+    # ── decorder ─────────────────────────────────────────────────────────────
+    # rules.md: group declarations: const, var, type, func — in that order.
+    decorder:
+      dec-order:
+        - const
+        - var
+        - type
+        - func
+      disable-dec-order-check: false
+      disable-init-func-first-check: false
+
+    # ── funlen ───────────────────────────────────────────────────────────────
+    # rules.md: functions should be short and focused.
+    funlen:
+      lines: 60
+      statements: 40
+
+    # ── maintidx ─────────────────────────────────────────────────────────────
+    # Flag functions with a maintainability index below 20 (golangci-lint default).
+    maintidx:
+      under: 20
+
+    # ── nilnil ───────────────────────────────────────────────────────────────
+    nilnil:
+      detect-opposite: true  # also flag (non-nil value, non-nil error)
+
+    # ── nolintlint ───────────────────────────────────────────────────────────
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
+
+    # ── reassign ─────────────────────────────────────────────────────────────
+    # rules.md: never reassign io.EOF or sentinel package errors.
+    reassign:
+      patterns:
+        - "EOF"
+        - "Err.*"
+
+    # ── testpackage ──────────────────────────────────────────────────────────
+    # rules.md: use an external test package (foo_test) for black-box testing.
+    testpackage:
+      skip-regexp: (export|internal)_test\.go
+      allow-packages:
+        - main
+
+    # ── thelper ──────────────────────────────────────────────────────────────
+    # rules.md: test helper functions must call t.Helper() as their first statement.
+    thelper:
+      test:
+        first: true
+        name: true
+        begin: true
+      benchmark:
+        first: true
+        name: true
+        begin: true
+
+    # ── iface ────────────────────────────────────────────────────────────────
+    # rules.md: define the narrowest interface that satisfies your need.
+    # Accept interfaces, return concrete types.
+    iface:
+      enable:
+        - identical  # two interfaces in the same package share identical method sets
+        - unused     # interface is defined but never referenced
+        - opaque     # func always returns one concrete type; return concrete instead
+
+    # ── wrapcheck ────────────────────────────────────────────────────────────
+    # rules.md: errors from external packages must carry context via wrapping.
+    # Standard wrapping helpers are already in the default ignore list.
+    wrapcheck:
+      extra-ignore-sigs:
+        - .Errorf(
+        - errors.New(
+
+    # ── depguard ─────────────────────────────────────────────────────────────
+    # spec.md: climax uses its own command pattern; no third-party CLI frameworks.
+    depguard:
+      rules:
+        no-cli-frameworks:
+          deny:
+            - pkg: "github.com/spf13/cobra"
+              desc: "climax uses its own command pattern; do not import cobra"
+            - pkg: "github.com/urfave/cli"
+              desc: "climax uses its own command pattern; do not import urfave/cli"
+            - pkg: "github.com/spf13/pflag"
+              desc: "use the standard library flag package"
+            - pkg: "github.com/spf13/viper"
+              desc: "use standard library or explicit config structs"
+
+    # ── forbidigo ────────────────────────────────────────────────────────────
+    # spec.md: commands write to cmd.Stdout/cmd.Stderr; only main may call os.Exit.
+    # rules.md: use flag.NewFlagSet, never flag.Parse; no time.Sleep in tests; no t.Setenv.
+    forbidigo:
+      forbid:
+        - pattern: "^os\\.Exit$"
+          msg: "only main() may call os.Exit; commands must return errors"
+        - pattern: "^fmt\\.Print(ln|f)?$"
+          msg: "write to cmd.Stdout or cmd.Stderr instead of fmt.Print*"
+        - pattern: "^log\\.(Print|Fatal|Panic)"
+          msg: "return errors instead of calling log.Fatal/Panic; avoid log.Print in library code"
+        - pattern: "^flag\\.Parse$"
+          msg: "use flag.NewFlagSet scoped to the command function; never call flag.Parse directly"
+        - pattern: "^time\\.Sleep$"
+          msg: "do not use time.Sleep in tests; use a channel or sync primitive instead"
+        - pattern: "\\.Setenv$"
+          msg: "do not use t.Setenv; pass environment via a getenv parameter instead"
+      analyze-types: true
+
+    # ── gosec ────────────────────────────────────────────────────────────────
+    gosec:
+      excludes:
+        - G304  # file path from variable: expected and intentional in scaffold generation
+        - G301  # 0755 is the correct permission for generated source directories
+        - G306  # 0644 is the correct permission for generated Go source files
+        - G703  # path traversal via taint: user-provided paths are the purpose of scaffold
+
+    # ── revive ───────────────────────────────────────────────────────────────
+    # rules.md: error strings must not be capitalised or end with punctuation;
+    # exported symbols must have doc comments; follow standard Go naming.
+    revive:
+      severity: warning
+      rules:
+        - name: error-strings          # "must not be capitalized or end with punctuation"
+          severity: error
+          disabled: false
+        - name: exported               # exported symbols must have doc comments
+          severity: error
+          disabled: false
+          arguments:
+            - "disableStutteringCheck"
+        - name: var-naming             # standard Go naming conventions
+          severity: error
+          disabled: false
+        - name: indent-error-flow      # early return instead of else after error
+          severity: warning
+          disabled: false
+        - name: unused-parameter       # remove parameters that are never read
+          severity: warning
+          disabled: false
+        - name: unnecessary-stmt       # remove redundant statements
+          severity: warning
+          disabled: false
+        - name: context-as-argument    # context.Context must be the first parameter
+          severity: error
+          disabled: false
+        - name: context-keys-type      # context keys must be unexported named types
+          severity: error
+          disabled: false
+        - name: deep-exit              # os.Exit only in main / init — rules.md
+          severity: error
+          disabled: false
+        - name: bare-return            # no naked returns
+          severity: error
+          disabled: false
+        - name: early-return           # return early to reduce nesting
+          severity: warning
+          disabled: false
+        - name: package-comments       # packages must have a doc comment
+          severity: warning
+          disabled: false
+
+  exclusions:
+    rules:
+      # Test files: relax function-length, maintainability, and I/O restrictions.
+      - path: _test\.go
+        linters:
+          - funlen          # table-driven tests and helper setup can be long
+          - maintidx        # test files naturally score lower
+          - wrapcheck       # test code doesn't need to wrap every error
+          - forbidigo       # tests may use fmt.Print for diagnostics
+          - gochecknoglobals # package-level test vars (e.g. golden files) are fine
+
+      # scaffold.go contains long multi-line string constants (templates), not logic.
+      - path: pkg/scaffold/scaffold\.go
+        linters:
+          - funlen          # template constants inflate the line count
+          - decorder        # templates section is intentionally kept at the bottom of the file
+
+      # main.go: os.Exit(exitFail) is the correct and only call site.
+      - path: main\.go$
+        linters:
+          - forbidigo
+
+      # cmd/cmd.go dispatcher writes to io.Writer locals, not global stdout.
+      - path: cmd/cmd\.go$
+        linters:
+          - forbidigo
+
+      # cmd/cmd.go dispatcher must pass command errors through unwrapped; wrapping
+      # would prepend context to every command error, violating the spec's
+      # "<command>: <reason>" format.
+      - path: cmd/cmd\.go$
+        linters:
+          - wrapcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
