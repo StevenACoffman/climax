@@ -15,23 +15,80 @@ const (
 	CommandsMarker = "// register new commands here"
 )
 
+// AddOptions controls what AddCommand generates for the new command file.
+type AddOptions struct {
+	Name  string // ff.Command.Name; defaults to the Go package name (positional arg)
+	Short string // ff.Command.ShortHelp; defaults to "<name> command"
+	Long  string // ff.Command.LongHelp; defaults to "<Name> is a new command."
+}
+
+// InitOptions controls what InitApp generates.
+type InitOptions struct {
+	ImportPrefix string // Go import path for the application root (required)
+	Name         string // ff.Command.Name for the root; defaults to last segment of ImportPrefix
+	Short        string // ff.Command.ShortHelp for the root; defaults to "TODO: describe <name> here"
+	Long         string // ff.Command.LongHelp for the root; omitted if empty
+	RootPkg      string // Go package name (and file basename) for the root config; defaults to "root"
+	NoVersion    bool   // when true, skip generating cmd/version/version.go
+}
+
 // InitApp writes a complete Climax application scaffold to dir.
-// importPrefix is the Go import path for the application root
-// (e.g. "github.com/org/repo/tools/myapp").
-func InitApp(dir, importPrefix string) error {
-	files := []struct {
-		rel     string
-		content string
-	}{
-		{"main.go", applyImport(mainTemplate, importPrefix)},
-		{filepath.Join("cmd", "cmd.go"), applyImport(cmdTemplate, importPrefix)},
-		{filepath.Join("cmd", "version", "version.go"), applyImport(versionTemplate, importPrefix)},
-		{filepath.Join("pkg", "pattern", "command", "base.go"), baseTemplate},
+func InitApp(dir string, opts InitOptions) error {
+	// Fill in defaults.
+	parts := strings.Split(opts.ImportPrefix, "/")
+	appName := parts[len(parts)-1]
+	if opts.Name == "" {
+		opts.Name = appName
+	}
+	if opts.RootPkg == "" {
+		opts.RootPkg = "root"
+	}
+	if opts.Short == "" {
+		opts.Short = "TODO: describe " + opts.Name + " here"
+	}
+
+	// Build conditional template fragments.
+	longHelpLine := ""
+	if opts.Long != "" {
+		longHelpLine = "\t\tLongHelp:  \"" + strings.ReplaceAll(opts.Long, `"`, `\"`) + "\",\n"
+	}
+	versionImport := ""
+	versionCall := ""
+	if !opts.NoVersion {
+		versionImport = "\t\"" + opts.ImportPrefix + "/cmd/version\"\n"
+		versionCall = "\tversion.New(r)\n"
+	}
+
+	vars := map[string]string{
+		"APP_IMPORT":     opts.ImportPrefix,
+		"APP_NAME":       opts.Name,
+		"ROOT_PKG":       opts.RootPkg,
+		"APP_SHORT":      opts.Short,
+		"LONG_HELP_LINE": longHelpLine,
+		"VERSION_IMPORT": versionImport,
+		"VERSION_CALL":   versionCall,
+	}
+
+	type fileEntry struct {
+		rel  string
+		tmpl string
+	}
+	files := []fileEntry{
+		{"main.go", mainTemplate},
+		{filepath.Join("cmd", "cmd.go"), cmdTemplate},
+		{filepath.Join("cmd", opts.RootPkg, opts.RootPkg+".go"), rootTemplate},
+	}
+	if !opts.NoVersion {
+		files = append(files, fileEntry{
+			filepath.Join("cmd", "version", "version.go"),
+			versionTemplate,
+		})
 	}
 
 	for _, f := range files {
-		if err := writeFile(filepath.Join(dir, f.rel), f.content); err != nil {
-			return fmt.Errorf("init: %w", err)
+		content := applyVars(f.tmpl, vars)
+		if err := writeFile(filepath.Join(dir, f.rel), content); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -40,12 +97,7 @@ func InitApp(dir, importPrefix string) error {
 // IsClimaxApp reports whether dir is the root of a Climax application
 // created by InitApp. It returns a descriptive error if not.
 func IsClimaxApp(dir string) error {
-	required := []string{
-		"main.go",
-		filepath.Join("cmd", "cmd.go"),
-		filepath.Join("pkg", "pattern", "command", "base.go"),
-	}
-	for _, rel := range required {
+	for _, rel := range []string{"main.go", filepath.Join("cmd", "cmd.go")} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 			return fmt.Errorf("not a climax app root: missing %s", rel)
 		}
@@ -55,37 +107,89 @@ func IsClimaxApp(dir string) error {
 	if err != nil {
 		return fmt.Errorf("not a climax app root: cannot read cmd/cmd.go: %w", err)
 	}
-	if !strings.Contains(string(data), CommandsMarker) {
-		return fmt.Errorf("not a climax app root: cmd/cmd.go missing %q marker", CommandsMarker)
+	content := string(data)
+
+	for _, marker := range []string{ImportsMarker, CommandsMarker} {
+		if !strings.Contains(content, marker) {
+			return fmt.Errorf("not a climax app root: cmd/cmd.go missing %q marker", marker)
+		}
 	}
+
+	// Determine root package from marker (default "root" for backwards compat).
+	rootPkg := readMarker(content, "// climax:root-pkg")
+	if rootPkg == "" {
+		rootPkg = "root"
+	}
+
+	rootFile := filepath.Join("cmd", rootPkg, rootPkg+".go")
+	if _, err := os.Stat(filepath.Join(dir, rootFile)); err != nil {
+		return fmt.Errorf("not a climax app root: missing %s", rootFile)
+	}
+
 	return nil
 }
 
 // AddCommand creates cmd/<name>/<name>.go and registers it in cmd/cmd.go.
-func AddCommand(dir, name, importPrefix string) error {
-	if err := validateIdent(name); err != nil {
-		return fmt.Errorf("add: %w", err)
+func AddCommand(dir, name, importPrefix string, opts AddOptions) error {
+	if err := ValidateIdent(name); err != nil {
+		return err
 	}
 
-	titleName := titleCase(name)
+	// Read persisted values from cmd/cmd.go markers.
+	cmdGoPath := filepath.Join(dir, "cmd", "cmd.go")
+	data, err := os.ReadFile(cmdGoPath)
+	if err != nil {
+		return fmt.Errorf("reading cmd/cmd.go: %w", err)
+	}
+	content := string(data)
+
+	cliName := readMarker(content, "// climax:name")
+	if cliName == "" {
+		// Fallback: derive from import path (pre-marker apps).
+		parts := strings.Split(importPrefix, "/")
+		cliName = parts[len(parts)-1]
+	}
+
+	rootPkg := readMarker(content, "// climax:root-pkg")
+	if rootPkg == "" {
+		rootPkg = "root"
+	}
+
+	// Apply AddOptions defaults.
+	ffName := name
+	if opts.Name != "" {
+		ffName = opts.Name
+	}
+	short := name + " command"
+	if opts.Short != "" {
+		short = opts.Short
+	}
+	long := titleCase(name) + " is a new command."
+	if opts.Long != "" {
+		long = opts.Long
+	}
+
+	vars := map[string]string{
+		"APP_IMPORT":  importPrefix,
+		"APP_NAME":    cliName,
+		"ROOT_PKG":    rootPkg,
+		"CMD_NAME":    name,
+		"CMD_FF_NAME": ffName,
+		"CMD_SHORT":   short,
+		"CMD_LONG":    long,
+	}
 
 	// Write cmd/<name>/<name>.go.
 	cmdFilePath := filepath.Join(dir, "cmd", name, name+".go")
-	content := applyImport(newCmdTemplate, importPrefix)
-	content = strings.ReplaceAll(content, "CMD_TITLE", titleName)
-	content = strings.ReplaceAll(content, "CMD_NAME", name)
-	if err := writeFile(cmdFilePath, content); err != nil {
-		return fmt.Errorf("add: %w", err)
+	if err := writeFile(cmdFilePath, applyVars(newCmdTemplate, vars)); err != nil {
+		return err
 	}
 
 	// Register in cmd/cmd.go.
-	if err := registerInCmdGo(dir, name, titleName, importPrefix); err != nil {
-		return fmt.Errorf("add: %w", err)
-	}
-	return nil
+	return registerInCmdGo(dir, name, importPrefix)
 }
 
-func registerInCmdGo(dir, name, titleName, importPrefix string) error {
+func registerInCmdGo(dir, name, importPrefix string) error {
 	cmdGoPath := filepath.Join(dir, "cmd", "cmd.go")
 	data, err := os.ReadFile(cmdGoPath)
 	if err != nil {
@@ -106,9 +210,9 @@ func registerInCmdGo(dir, name, titleName, importPrefix string) error {
 	importLine := fmt.Sprintf("\"%s/cmd/%s\"\n\t", importPrefix, name)
 	content = strings.Replace(content, ImportsMarker, importLine+ImportsMarker, 1)
 
-	// Insert factory call before the commands marker.
-	// The marker line is "\t\t// register new commands here".
-	callLine := fmt.Sprintf("%s.%sCommand(),\n\t\t", name, titleName)
+	// Insert New(r) call before the commands marker.
+	// The marker line is "\t// register new commands here".
+	callLine := fmt.Sprintf("%s.New(r)\n\t", name)
 	content = strings.Replace(content, CommandsMarker, callLine+CommandsMarker, 1)
 
 	if err := os.WriteFile(cmdGoPath, []byte(content), 0o644); err != nil {
@@ -116,6 +220,18 @@ func registerInCmdGo(dir, name, titleName, importPrefix string) error {
 	}
 
 	return nil
+}
+
+// readMarker scans content line by line for "// <prefix> <value>" and returns
+// the trimmed value after the prefix. Returns "" if not found.
+func readMarker(content, prefix string) string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimSpace(trimmed[len(prefix):])
+		}
+	}
+	return ""
 }
 
 // writeFile creates path (and any needed parent directories), failing if the
@@ -133,11 +249,38 @@ func writeFile(path, content string) error {
 	return nil
 }
 
-func applyImport(tmpl, importPrefix string) string {
-	return strings.ReplaceAll(tmpl, "APP_IMPORT", importPrefix)
+// applyVars replaces placeholder keys in tmpl with their values simultaneously.
+func applyVars(tmpl string, vars map[string]string) string {
+	pairs := make([]string, 0, len(vars)*2)
+	for k, v := range vars {
+		pairs = append(pairs, k, v)
+	}
+	return strings.NewReplacer(pairs...).Replace(tmpl)
 }
 
-func validateIdent(name string) error {
+// ValidateCliName reports whether name is valid as a CLI command name.
+// It allows letters, digits, hyphens, and underscores, starting with a letter
+// or underscore.
+func ValidateCliName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+	for i, r := range name {
+		if i == 0 {
+			if !unicode.IsLetter(r) && r != '_' {
+				return fmt.Errorf("name %q must start with a letter or underscore", name)
+			}
+		} else {
+			if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' {
+				return fmt.Errorf("name %q contains invalid character %q", name, r)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateIdent reports whether name is a valid Go identifier.
+func ValidateIdent(name string) error {
 	if name == "" {
 		return fmt.Errorf("command name cannot be empty")
 	}
@@ -170,9 +313,12 @@ const mainTemplate = `// Package main is the entry point for the CLI.
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 
+	"github.com/peterbourgon/ff/v4"
 	"APP_IMPORT/cmd"
 )
 
@@ -182,63 +328,90 @@ const (
 )
 
 func main() {
-	if err := cmd.Run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	ctx := context.Background()
+	err := cmd.Run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	switch {
+	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
+		os.Exit(exitSuccess)
+	default:
 		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
 		os.Exit(exitFail)
 	}
-	os.Exit(exitSuccess)
 }
 `
 
 const cmdTemplate = `// Package cmd is the dispatcher; it routes CLI arguments to the matching command.
 package cmd
+// climax:name APP_NAME
+// climax:root-pkg ROOT_PKG
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 
-	"APP_IMPORT/cmd/version"
-	// climax:imports
-	"APP_IMPORT/pkg/pattern/command"
+	"github.com/peterbourgon/ff/v4"
+	"github.com/peterbourgon/ff/v4/ffhelp"
+	"APP_IMPORT/cmd/ROOT_PKG"
+VERSION_IMPORT	// climax:imports
 )
 
-// Run dispatches args to the matching command.
+// Run parses args and dispatches to the matching command.
 // args must not include the executable name (pass os.Args[1:]).
-func Run(args []string, stdout, stderr io.Writer) error {
-	commands := []*command.Command{
-		version.VersionCommand(),
-		// register new commands here
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	r := ROOT_PKG.New(stdout, stderr)
+VERSION_CALL	// register new commands here
+
+	if err := r.Command.Parse(args); err != nil {
+		fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
+		return fmt.Errorf("parse: %w", err)
 	}
 
-	m := make(map[string]*command.Command)
-	for i := range commands {
-		m[commands[i].UsageLine] = commands[i]
-	}
-
-	if len(args) == 0 || args[0] == "help" {
-		if len(args) == 2 {
-			cmd := m[args[1]]
-			if cmd == nil {
-				return errors.New(args[1] + ": unknown command")
-			}
-			_, _ = fmt.Fprintln(stdout, cmd.Long)
-			return nil
+	if err := r.Command.Run(ctx); err != nil {
+		if !errors.Is(err, ff.ErrNoExec) {
+			fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
 		}
-		_, _ = fmt.Fprintln(stdout, "Available Commands:")
-		for i := range commands {
-			_, _ = fmt.Fprintf(stdout, "%s - %s\n", commands[i].UsageLine, commands[i].Short)
-		}
-		return nil
+		return err
 	}
 
-	cmd := m[args[0]]
-	if cmd == nil {
-		return errors.New(args[0] + ": invalid command")
-	}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run(cmd, args[1:])
+	return nil
+}
+`
+
+const rootTemplate = `// Package ROOT_PKG defines the root configuration for the CLI.
+package ROOT_PKG
+
+import (
+	"io"
+
+	"github.com/peterbourgon/ff/v4"
+)
+
+// Config holds shared I/O writers and the root ff.Command.
+// All subcommand configs embed *Config to inherit these.
+type Config struct {
+	Stdout  io.Writer
+	Stderr  io.Writer
+	Flags   *ff.FlagSet
+	Command *ff.Command
+}
+
+// New returns a new root Config with the given I/O writers.
+func New(stdout, stderr io.Writer) *Config {
+	var cfg Config
+	cfg.Stdout = stdout
+	cfg.Stderr = stderr
+	// No shared flags — cfg.Flags is nil; ff provides --help automatically.
+	// To add shared flags, uncomment and bind before constructing the command:
+	// cfg.Flags = ff.NewFlagSet("APP_NAME")
+	// cfg.Flags.BoolVar(&cfg.MyFlag, 0, "my-flag", "", "description")
+	cfg.Command = &ff.Command{
+		Name:      "APP_NAME",
+		Usage:     "APP_NAME <SUBCOMMAND> ...",
+		ShortHelp: "APP_SHORT",
+LONG_HELP_LINE	}
+	return &cfg
 }
 `
 
@@ -246,75 +419,87 @@ const versionTemplate = `// Package version implements the "version" CLI command
 package version
 
 import (
+	"context"
 	"fmt"
 
-	"APP_IMPORT/pkg/pattern/command"
+	"github.com/peterbourgon/ff/v4"
+	"APP_IMPORT/cmd/ROOT_PKG"
 )
 
-// VersionCommand is the only exported symbol in this package.
-func VersionCommand() *command.Command {
-	return &command.Command{
-		UsageLine: "version",
-		Short:     "prints version information",
-		Long:      "Version prints version information for the application.",
-		Run:       versionCmd,
-	}
+// Version is the application version string.
+// Override at build time: go build -ldflags "-X 'APP_IMPORT/cmd/version.Version=1.2.3'"
+var Version = "dev"
+
+// Config holds the configuration for the version command.
+type Config struct {
+	*ROOT_PKG.Config
+	Flags   *ff.FlagSet
+	Command *ff.Command
 }
 
-func versionCmd(cmd *command.Command, _ []string) error {
-	_, _ = fmt.Fprintln(cmd.Stdout, "version 0.0.1")
+// New creates and registers the version command with the given parent config.
+func New(parent *ROOT_PKG.Config) *Config {
+	var cfg Config
+	cfg.Config = parent
+	cfg.Flags = ff.NewFlagSet("version").SetParent(parent.Flags)
+	cfg.Command = &ff.Command{
+		Name:      "version",
+		Usage:     "APP_NAME version",
+		ShortHelp: "print version information",
+		LongHelp:  "Prints version information for the application.",
+		Flags:     cfg.Flags,
+		Exec:      cfg.exec,
+	}
+	parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
+	return &cfg
+}
+
+func (cfg *Config) exec(_ context.Context, _ []string) error {
+	_, _ = fmt.Fprintln(cfg.Stdout, "version "+Version)
 	return nil
 }
 `
 
-const baseTemplate = `// Package command defines the base Command type used by all CLI commands.
-package command
-
-import "io"
-
-// Command is the base type for all CLI commands.
-type Command struct {
-	// Run holds the command implementation. args are the arguments after the
-	// command name — the executable and command name are already stripped.
-	Run func(cmd *Command, args []string) error
-
-	// UsageLine is the one-line usage message and the dispatch key.
-	UsageLine string
-
-	// Short is shown in 'help' output.
-	Short string
-
-	// Long is shown in 'help <command>' output.
-	Long string
-
-	// Stdout and Stderr are set by the dispatcher before Run is called.
-	// Commands must write to these instead of os.Stdout / os.Stderr.
-	Stdout io.Writer
-	Stderr io.Writer
-}
-`
-
-const newCmdTemplate = `// Package CMD_NAME implements the "CMD_NAME" CLI command.
+const newCmdTemplate = `// Package CMD_NAME implements the "CMD_FF_NAME" CLI command.
 package CMD_NAME
 
 import (
+	"context"
 	"fmt"
 
-	"APP_IMPORT/pkg/pattern/command"
+	"github.com/peterbourgon/ff/v4"
+	"APP_IMPORT/cmd/ROOT_PKG"
 )
 
-// CMD_TITLECommand is the only exported symbol in this package.
-func CMD_TITLECommand() *command.Command {
-	return &command.Command{
-		UsageLine: "CMD_NAME",
-		Short:     "CMD_NAME command",
-		Long:      "CMD_TITLE is a new command.",
-		Run:       CMD_NAMECmd,
-	}
+// Config holds the configuration for the CMD_FF_NAME command.
+type Config struct {
+	*ROOT_PKG.Config
+	Flags   *ff.FlagSet
+	Command *ff.Command
 }
 
-func CMD_NAMECmd(cmd *command.Command, _ []string) error {
-	_, _ = fmt.Fprintln(cmd.Stdout, "CMD_NAME")
+// New creates and registers the CMD_FF_NAME command with the given parent config.
+func New(parent *ROOT_PKG.Config) *Config {
+	var cfg Config
+	cfg.Config = parent
+	cfg.Flags = ff.NewFlagSet("CMD_FF_NAME").SetParent(parent.Flags)
+	// bind flags: cfg.Flags.StringVar(&cfg.SomeFlag, 0, "some-flag", "", "description")
+	cfg.Command = &ff.Command{
+		Name:      "CMD_FF_NAME",
+		Usage:     "APP_NAME CMD_FF_NAME [FLAGS]",
+		ShortHelp: "CMD_SHORT",
+		LongHelp:  "CMD_LONG",
+		Flags:     cfg.Flags,
+		Exec:      cfg.exec,
+	}
+	parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
+	return &cfg
+}
+
+func (cfg *Config) exec(_ context.Context, _ []string) error {
+	// TODO: implement CMD_FF_NAME.
+	// Rename the second parameter from _ to args to access positional arguments.
+	_, _ = fmt.Fprintln(cfg.Stdout, "CMD_FF_NAME: not yet implemented")
 	return nil
 }
 `

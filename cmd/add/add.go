@@ -2,43 +2,65 @@
 package add
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"path/filepath"
 
+	"github.com/peterbourgon/ff/v4"
+	"github.com/StevenACoffman/climax/cmd/root"
 	"github.com/StevenACoffman/climax/pkg/gomod"
-	"github.com/StevenACoffman/climax/pkg/pattern/command"
 	"github.com/StevenACoffman/climax/pkg/scaffold"
 )
 
-// AddCommand is the only exported symbol in this package.
-func AddCommand() *command.Command {
-	return &command.Command{
-		UsageLine: "add",
-		Short:     "add a new command to a climax application",
-		Long: "Add (climax add <name> [path]) creates a new command package at " +
+// Config holds the configuration for the add command.
+type Config struct {
+	*root.Config
+	Name    string
+	Short   string
+	Long    string
+	Flags   *ff.FlagSet
+	Command *ff.Command
+}
+
+// New creates and registers the add command with the given parent config.
+func New(parent *root.Config) *Config {
+	var cfg Config
+	cfg.Config = parent
+	cfg.Flags = ff.NewFlagSet("add").SetParent(parent.Flags)
+	cfg.Flags.StringVar(&cfg.Name, 0, "name", "", "ff.Command.Name for the generated command (default: same as <name>; allows hyphens)")
+	cfg.Flags.StringVar(&cfg.Short, 0, "short", "", `ShortHelp for the generated command (default: "<name> command")`)
+	cfg.Flags.StringVar(&cfg.Long, 0, "long", "", `LongHelp for the generated command (default: "<Name> is a new command.")`)
+	cfg.Command = &ff.Command{
+		Name:      "add",
+		Usage:     "climax add [FLAGS] <name> [path]",
+		ShortHelp: "add a new command to a climax application",
+		LongHelp: "Add (climax add [FLAGS] <name> [path]) creates a new command package at " +
 			"cmd/<name>/<name>.go inside the Climax application rooted at path " +
 			"(default: current directory) and registers it in cmd/cmd.go. " +
 			"The path must be inside an existing Go module and must be the root " +
 			"of an application previously created by 'climax init'.",
-		Run: addCmd,
+		Flags: cfg.Flags,
+		Exec:  cfg.exec,
 	}
+	parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
+	return &cfg
 }
 
-func addCmd(cmd *command.Command, args []string) error {
-	fs := flag.NewFlagSet("add", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("add: %w", err)
+func (cfg *Config) exec(_ context.Context, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("add: command name required (usage: climax add [FLAGS] <name> [path])")
 	}
-
-	if fs.NArg() < 1 {
-		return fmt.Errorf("add: command name required (usage: climax add <name> [path])")
-	}
-	name := fs.Arg(0)
+	name := args[0]
 
 	path := "."
-	if fs.NArg() > 1 {
-		path = fs.Arg(1)
+	if len(args) > 1 {
+		path = args[1]
+	}
+
+	if cfg.Name != "" {
+		if err := scaffold.ValidateCliName(cfg.Name); err != nil {
+			return fmt.Errorf("add: --name: %w", err)
+		}
 	}
 
 	absPath, err := filepath.Abs(path)
@@ -60,10 +82,16 @@ func addCmd(cmd *command.Command, args []string) error {
 		return fmt.Errorf("add: %w", err)
 	}
 
-	if err := scaffold.AddCommand(absPath, name, importPrefix); err != nil {
+	opts := scaffold.AddOptions{
+		Name:  cfg.Name,
+		Short: cfg.Short,
+		Long:  cfg.Long,
+	}
+
+	if err := scaffold.AddCommand(absPath, name, importPrefix, opts); err != nil {
 		return fmt.Errorf("add: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(cmd.Stdout, "added command %q to %s\n", name, absPath)
+	_, _ = fmt.Fprintf(cfg.Stdout, "added command %q to %s\n", name, absPath)
 	return nil
 }
