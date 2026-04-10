@@ -1,0 +1,63 @@
+// Package version implements the "version" CLI command.
+package version
+
+import (
+	"context"
+	"fmt"
+	"runtime/debug"
+
+	"github.com/peterbourgon/ff/v4"
+	"APP_IMPORT/cmd/ROOT_PKG"
+)
+
+// Version is the application version string. When built from a tagged release
+// or installed via "go install", the Go toolchain embeds the module version
+// automatically and it is read from build info at startup. Override at link
+// time only if the auto-detected value is incorrect:
+//
+//	go build -ldflags "-X 'APP_IMPORT/cmd/version.Version=v1.2.3'"
+var Version = "dev"
+
+func init() {
+	// If Version was not overridden via ldflags, try to read it from the
+	// module build info embedded by the Go toolchain.
+	if Version != "dev" {
+		return
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" {
+		Version = v
+	}
+}
+
+// Config holds the configuration for the version command.
+type Config struct {
+	*ROOT_PKG.Config
+	Flags   *ff.FlagSet
+	Command *ff.Command
+}
+
+// New creates and registers the version command with the given parent config.
+func New(parent *ROOT_PKG.Config) *Config {
+	var cfg Config
+	cfg.Config = parent
+	cfg.Flags = ff.NewFlagSet("version").SetParent(parent.Flags)
+	cfg.Command = &ff.Command{
+		Name:      "version",
+		Usage:     "APP_NAME version",
+		ShortHelp: "print version information",
+		LongHelp:  "Prints the version of APP_NAME. The version is read from module build info at startup and can be overridden at link time with -ldflags.",
+		Flags:     cfg.Flags,
+		Exec:      cfg.exec,
+	}
+	parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
+	return &cfg
+}
+
+func (cfg *Config) exec(_ context.Context, _ []string) error {
+	_, _ = fmt.Fprintln(cfg.Stdout, Version)
+	return nil
+}

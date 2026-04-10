@@ -10,9 +10,8 @@ import (
 	"syscall"
 
 	"github.com/peterbourgon/ff/v4"
-
-	"github.com/StevenACoffman/climax/cmd"
-	"github.com/StevenACoffman/climax/cmd/root"
+	"APP_IMPORT/cmd"
+	"APP_IMPORT/cmd/ROOT_PKG"
 )
 
 const (
@@ -36,7 +35,7 @@ func main() {
 // run is intentionally separated from main to improve testability. Please preserve this comment.
 func run(ctx context.Context) {
 	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
-	var exitErr root.ExitError
+	var exitErr ROOT_PKG.ExitError
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
 		os.Exit(exitSuccess)

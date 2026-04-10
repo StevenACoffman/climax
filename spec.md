@@ -7,9 +7,9 @@ Commands are represented as `ff.Command` values. Do not use other CLI frameworks
 (cobra, urfave/cli, etc.). Do not use interfaces for command polymorphism.
 Use the `ff.Command` struct with the Config struct pattern described below.
 
-Note: Replace `<org>/<repo>` below with the Go module path from go.mod.
+Note: Replace `<org>/<repo>` below with the Go module path from `go.mod`.
 
----
+______________________________________________________________________
 
 ## Directory Structure
 
@@ -20,14 +20,16 @@ Note: Replace `<org>/<repo>` below with the Go module path from go.mod.
 ├── cmd/
 │   ├── cmd.go                     # Dispatcher and command registration (package cmd)
 │   ├── root/                      # Default name; configurable via climax init --root-pkg
-│   │   └── root.go                # RootConfig: shared I/O, flags, and root ff.Command
+│   │   └── root.go                # Config: shared I/O, flags, root ff.Command, ExitError
 │   ├── version/
 │   │   └── version.go             # Version command (omit with climax init --no-version)
 │   └── <name>/
 │       └── <name>.go              # One package per command
 ```
 
----
+The dispatcher file may also be named `command.go`; climax's AST analysis accepts either.
+
+______________________________________________________________________
 
 ## Command Type
 
@@ -36,96 +38,93 @@ exported fields are:
 
 ```go
 type Command struct {
-    // Name is the dispatch key. Subcommand selection is case-insensitive.
-    // Required.
-    Name string
-
-    // Usage is the one-line syntax string shown at the top of help output.
-    // Example: "<cli-name> snapshot [FLAGS] <ARG>"
-    // Recommended.
-    Usage string
-
-    // ShortHelp is shown next to the command name in parent help output.
-    // Recommended.
-    ShortHelp string
-
-    // LongHelp is shown in the command's own help output.
-    // Optional.
-    LongHelp string
-
-    // Flags is the ff.FlagSet for this command. Constructed and bound in New().
-    // If nil, an empty flag set is used automatically (--help still works).
-    // Optional.
-    Flags ff.Flags
-
-    // Subcommands lists commands available under this one.
-    // Each subcommand's New() appends itself here.
-    // Optional.
-    Subcommands []*Command
-
-    // Exec is the terminal function called when this command is selected.
-    // args are the positional arguments left over after flag parsing.
-    // Optional. If nil, running this command returns ff.ErrNoExec.
-    Exec func(ctx context.Context, args []string) error
+    Name        string                               // dispatch key; case-insensitive match
+    Usage       string                               // one-line syntax, e.g. "<cli> <cmd> [FLAGS] <ARG>"
+    ShortHelp   string                               // shown next to name in parent help
+    LongHelp    string                               // shown in command's own help (optional)
+    Flags       ff.Flags                             // nil → empty flag set; --help always works
+    Subcommands []*Command                           // populated by each subcommand's New()
+    Exec        func(context.Context, []string) error // nil → returns ff.ErrNoExec
 }
 ```
 
-Do not call `Parse`, `Run`, or any other method on `ff.Command` directly from
-command packages. Those are called by the dispatcher in `cmd/cmd.go`.
+Do not call `Parse`, `Run`, or any other method on `ff.Command` from command
+packages. Those are called exclusively by the dispatcher in `cmd/cmd.go`.
 
----
+______________________________________________________________________
 
 ## Root Config
 
-`cmd/root/root.go` defines `RootConfig`. It holds shared I/O writers, any flags
-shared across all commands (e.g. `--verbose`), and the root `ff.Command`.
-Subcommand configs embed `*root.Config` to inherit these.
+`cmd/root/root.go` defines `Config`. It holds `stdin`/`stdout`/`stderr`, any flags
+shared across all commands, and the root `ff.Command`. It also declares `ExitError`
+(see below). Subcommand configs embed `*root.Config` to inherit these.
 
 ```go
 // cmd/root/root.go
 package root
 
 import (
+    "fmt"
     "io"
 
     "github.com/peterbourgon/ff/v4"
 )
 
+// ExitError lets a command exit with a specific code without printing "error: ...".
+// Return it from exec; main.go handles it via errors.As.
+type ExitError int
+
+func (e ExitError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+
 type Config struct {
+    Stdin   io.Reader
     Stdout  io.Writer
     Stderr  io.Writer
-    Verbose bool
     Flags   *ff.FlagSet
     Command *ff.Command
 }
 
-func New(stdout, stderr io.Writer) *Config {
+func New(stdin io.Reader, stdout, stderr io.Writer) *Config {
     var cfg Config
+    cfg.Stdin = stdin
     cfg.Stdout = stdout
     cfg.Stderr = stderr
-    cfg.Flags = ff.NewFlagSet("<cli-name>")
-    cfg.Flags.BoolVar(&cfg.Verbose, 'v', "verbose", "log verbose output")
+    // No shared flags by default — cfg.Flags is nil; ff provides --help automatically.
+    // To add shared flags (e.g. --verbose), uncomment and bind before constructing the command:
+    // cfg.Flags = ff.NewFlagSet("<cli-name>")
+    // cfg.Flags.BoolVar(&cfg.Verbose, 'v', "verbose", "log verbose output")
     cfg.Command = &ff.Command{
         Name:      "<cli-name>",
-        Usage:     "<cli-name> [FLAGS] <SUBCOMMAND> ...",
-        ShortHelp: "<one-line description of the program>",
+        Usage:     "<cli-name> <SUBCOMMAND> ...",
+        ShortHelp: "<one-line description>",
         Flags:     cfg.Flags,
     }
     return &cfg
 }
 ```
 
-If the application has no shared flags, omit `Flags` setup entirely — leave
-`cfg.Flags` as nil. `ff` constructs an empty flag set automatically and
-`--help` still works. This is the default generated by `climax init`; uncomment
-the `ff.NewFlagSet` line when you add the first shared flag.
+______________________________________________________________________
 
----
+## ExitError
+
+`root.ExitError` lets a command exit with a specific non-zero code without
+printing an `error: ...` line. The dispatcher suppresses help output for it,
+and `run()` in `main.go` calls `os.Exit` directly:
+
+```go
+// In any command's exec function:
+if !ok {
+    return root.ExitError(1) // exits 1; no "error:" printed
+}
+return nil // exits 0
+```
+
+______________________________________________________________________
 
 ## Adding a New Command
 
 Each command lives in its own package under `cmd/`. The package contains a
-`Config` struct, an exported `New` factory function, and an `exec` method.
+`Config` struct, an exported `New` factory, and an unexported `exec` method.
 
 ### Command Template
 
@@ -135,6 +134,7 @@ package <name>
 
 import (
     "context"
+    "fmt"
 
     "github.com/peterbourgon/ff/v4"
     "<org>/<repo>/cmd/root"
@@ -164,26 +164,78 @@ func New(parent *root.Config) *Config {
     return &cfg
 }
 
-func (cfg *Config) exec(ctx context.Context, args []string) error {
-    // cfg.Stdout, cfg.Stderr available via embedded root.Config
+func (cfg *Config) exec(_ context.Context, _ []string) error {
+    // cfg.Stdin, cfg.Stdout, cfg.Stderr available via embedded root.Config
     // flag values available as cfg fields — already parsed before exec is called
+    _, _ = fmt.Fprintln(cfg.Stdout, "<name>: not yet implemented")
     return nil
 }
 ```
 
 ### Rules
 
-- `New` and `Config` are the only exported symbols in the package.
-- `New` appends the command to `parent.Command.Subcommands` — no other registration needed.
-- `Name` is the string matched (case-insensitively) when the user types a subcommand. It must be unique across all subcommands.
+- `New` and `Config` are the only exported identifiers in the package (commands that need a user-visible package-level variable, such as `Version string`, may export it too).
+- `New` appends to `parent.Command.Subcommands` — no other registration needed.
 - Flag values are bound to `Config` fields in `New()`, not inside `exec`.
-- `exec` reads already-parsed flag values. Never call `Parse` or `fs.Parse` inside `exec`.
-- `SetParent(parent.Flags)` must be called on every subcommand flag set so that parent flags (e.g. `--verbose`) are accepted at any level.
+- `SetParent(parent.Flags)` must be called on every subcommand flag set so that parent flags are accepted at any depth.
 - Write to `cfg.Stdout` / `cfg.Stderr`. Never use `os.Stdout` / `os.Stderr` directly.
-- Return `error`. Do not call `os.Exit` inside a command.
-- Error strings are lowercase, no trailing punctuation, format: `<command>: <reason>`.
+- Return `error`. Do not call `os.Exit` inside a command; use `root.ExitError` instead.
+- Error strings are lowercase, no trailing punctuation: `<command>: <reason>`.
 
-### Concrete Example — command with no flags
+### Exec stub generation
+
+`climax add` inspects the root `Config` struct before generating the exec stub:
+
+- If `Stdout` and/or `Stderr` fields are present → stub uses `fmt.Fprintln(cfg.Stdout, ...)` and imports `"fmt"`
+- If a logger field is detected (field name contains `"log"`) → stub uses `cfg.<LoggerField>.Info(...)`
+- Otherwise → stub returns `nil` with no imports
+
+### Nested Commands
+
+A command nested under another non-root command embeds its parent's `Config`
+instead of `*root.Config`, giving it access to both shared I/O and any flags
+the parent defines:
+
+```go
+// cmd/create/create.go — nested under "config"
+package create
+
+import (
+    "context"
+
+    "github.com/peterbourgon/ff/v4"
+    "<org>/<repo>/cmd/config"
+)
+
+type Config struct {
+    *config.Config // embeds parent; root.Config accessible transitively
+    Flags   *ff.FlagSet
+    Command *ff.Command
+}
+
+func New(parent *config.Config) *Config {
+    var cfg Config
+    cfg.Config = parent
+    cfg.Flags = ff.NewFlagSet("create").SetParent(parent.Flags)
+    cfg.Command = &ff.Command{
+        Name:  "create",
+        Usage: "<cli-name> config create [FLAGS]",
+        // ...
+        Exec: cfg.exec,
+    }
+    parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
+    return &cfg
+}
+
+func (cfg *Config) exec(_ context.Context, _ []string) error { return nil }
+```
+
+### Concrete Example — version command
+
+The generated version command reads the module version from build info at startup.
+`var Version = "dev"` acts as a sentinel; when the binary is installed via
+`go install` or built from a tagged release, `init()` replaces it automatically.
+Override at link time only when the auto-detected value is incorrect.
 
 ```go
 // cmd/version/version.go
@@ -192,14 +244,26 @@ package version
 import (
     "context"
     "fmt"
+    "runtime/debug"
 
     "github.com/peterbourgon/ff/v4"
     "<org>/<repo>/cmd/root"
 )
 
-// Version is the application version string.
-// Override at build time: go build -ldflags "-X '<org>/<repo>/cmd/version.Version=1.2.3'"
 var Version = "dev"
+
+func init() {
+    if Version != "dev" {
+        return
+    }
+    bi, ok := debug.ReadBuildInfo()
+    if !ok {
+        return
+    }
+    if v := bi.Main.Version; v != "" && v != "(devel)" {
+        Version = v
+    }
+}
 
 type Config struct {
     *root.Config
@@ -215,7 +279,7 @@ func New(parent *root.Config) *Config {
         Name:      "version",
         Usage:     "<cli-name> version",
         ShortHelp: "print version information",
-        LongHelp:  "Prints version information for the application.",
+        LongHelp:  "Prints the version of <cli-name>. The version is read from module build info at startup and can be overridden at link time with -ldflags.",
         Flags:     cfg.Flags,
         Exec:      cfg.exec,
     }
@@ -224,124 +288,23 @@ func New(parent *root.Config) *Config {
 }
 
 func (cfg *Config) exec(_ context.Context, _ []string) error {
-    _, _ = fmt.Fprintln(cfg.Stdout, "version "+Version)
+    _, _ = fmt.Fprintln(cfg.Stdout, Version)
     return nil
 }
 ```
 
-### Concrete Example — command that reads positional arguments
-
-```go
-// cmd/echo/echo.go
-package echo
-
-import (
-    "context"
-    "fmt"
-    "strings"
-
-    "github.com/peterbourgon/ff/v4"
-    "<org>/<repo>/cmd/root"
-)
-
-type Config struct {
-    *root.Config
-    Flags   *ff.FlagSet
-    Command *ff.Command
-}
-
-func New(parent *root.Config) *Config {
-    var cfg Config
-    cfg.Config = parent
-    cfg.Flags = ff.NewFlagSet("echo").SetParent(parent.Flags)
-    cfg.Command = &ff.Command{
-        Name:      "echo",
-        Usage:     "<cli-name> echo <ARG>...",
-        ShortHelp: "echo arguments",
-        LongHelp:  "Prints all provided arguments joined by spaces.",
-        Flags:     cfg.Flags,
-        Exec:      cfg.exec,
-    }
-    parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
-    return &cfg
-}
-
-func (cfg *Config) exec(_ context.Context, args []string) error {
-    if len(args) == 0 {
-        return fmt.Errorf("echo: no arguments provided")
-    }
-    _, _ = fmt.Fprintln(cfg.Stdout, strings.Join(args, " "))
-    return nil
-}
-```
-
-### Concrete Example — command with flags
-
-Flag values are bound to `Config` fields in `New()`. By the time `exec` is
-called, all flags are already parsed.
-
-```go
-// cmd/shout/shout.go
-package shout
-
-import (
-    "context"
-    "fmt"
-    "strings"
-
-    "github.com/peterbourgon/ff/v4"
-    "<org>/<repo>/cmd/root"
-)
-
-type Config struct {
-    *root.Config
-    NoNewline bool
-    Flags     *ff.FlagSet
-    Command   *ff.Command
-}
-
-func New(parent *root.Config) *Config {
-    var cfg Config
-    cfg.Config = parent
-    cfg.Flags = ff.NewFlagSet("shout").SetParent(parent.Flags)
-    cfg.Flags.BoolVar(&cfg.NoNewline, 'n', "no-newline", "suppress trailing newline")
-    cfg.Command = &ff.Command{
-        Name:      "shout",
-        Usage:     "<cli-name> shout [FLAGS] <ARG>...",
-        ShortHelp: "print arguments in uppercase",
-        LongHelp:  "Prints arguments in uppercase. Use -n/--no-newline to suppress newline.",
-        Flags:     cfg.Flags,
-        Exec:      cfg.exec,
-    }
-    parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
-    return &cfg
-}
-
-func (cfg *Config) exec(_ context.Context, args []string) error {
-    out := strings.ToUpper(strings.Join(args, " "))
-    if cfg.NoNewline {
-        _, _ = fmt.Fprint(cfg.Stdout, out)
-    } else {
-        _, _ = fmt.Fprintln(cfg.Stdout, out)
-    }
-    return nil
-}
-```
-
----
+______________________________________________________________________
 
 ## Registering Commands
 
 `cmd/cmd.go` is the **only place `New()` is called**. It constructs the root
-config, calls each subcommand's `New()` in registration order (which controls
-help output order), and exposes `Run` for `main`.
-
-Each `New()` call registers itself by appending to `parent.Command.Subcommands`.
-Do not register commands anywhere else — no `init()`, no globals.
+config, calls each subcommand's `New()` in order (which controls help output
+order), and exposes `Run` for `main`.
 
 ```go
 // cmd/cmd.go
 package cmd
+
 // climax:name <cli-name>
 // climax:root-pkg root
 
@@ -360,8 +323,8 @@ import (
 
 // Run parses args and dispatches to the matching command.
 // args must not include the executable name (pass os.Args[1:]).
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-    r := root.New(stdout, stderr)
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+    r := root.New(stdin, stdout, stderr)
     version.New(r)
     // register new commands here
 
@@ -371,7 +334,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
     }
 
     if err := r.Command.Run(ctx); err != nil {
-        if !errors.Is(err, ff.ErrNoExec) {
+        // Suppress help output for ErrNoExec and ExitError — both are intentional.
+        var exitErr root.ExitError
+        if !errors.Is(err, ff.ErrNoExec) && !errors.As(err, &exitErr) {
             fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
         }
         return err
@@ -384,12 +349,73 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 ### Dispatch Rules
 
 - `Run` receives `os.Args[1:]` — executable name already removed by `main`.
-- Subcommand selection is **case-insensitive** match on `Name`. No prefix matching, no fuzzy matching.
-- `-h` / `--help` at any level causes `Parse` to return `ff.ErrHelp`; `main` treats this as success.
-- A command with no `Exec` (e.g. the root command invoked without a subcommand) causes `Run` to return `ff.ErrNoExec`; `main` treats this as success.
-- Unknown subcommand returns an error; `main` owns the exit code.
+- Subcommand selection is **case-insensitive** match on `Name`. No prefix matching.
+- `-h` / `--help` at any level causes `Parse` to return `ff.ErrHelp`; treated as success.
+- A command with no `Exec` returns `ff.ErrNoExec`; treated as success.
+- Unknown subcommand returns an error; `main` controls the exit code.
 
----
+______________________________________________________________________
+
+## Entry Point
+
+`main.go` is intentionally thin. It sets up signal-safe shutdown via
+`signal.NotifyContext` and delegates to a separate `run()` function
+(which improves testability — test harnesses can call `run` directly).
+
+`ff.ErrHelp` and `ff.ErrNoExec` are not failures. `root.ExitError` bypasses
+the `"error: ..."` printer and calls `os.Exit` directly.
+
+```go
+// main.go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "os"
+    "os/signal"
+    "syscall"
+
+    "github.com/peterbourgon/ff/v4"
+    "<org>/<repo>/cmd"
+    "<org>/<repo>/cmd/root"
+)
+
+const (
+    exitFail    = 1
+    exitSuccess = 0
+)
+
+func main() {
+    // defer stop *must* be here in main *not* run (a different function)
+    // to guarantee the deferred stop is called. Please preserve this comment.
+    ctx, stop := signal.NotifyContext(context.Background(),
+        os.Interrupt,    // SIGINT = Ctrl+C
+        syscall.SIGQUIT, // Ctrl-\
+        syscall.SIGTERM, // polite termination request
+    )
+    defer stop()
+    run(ctx)
+}
+
+// run is intentionally separated from main to improve testability.
+func run(ctx context.Context) {
+    err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+    var exitErr root.ExitError
+    switch {
+    case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
+        os.Exit(exitSuccess)
+    case errors.As(err, &exitErr):
+        os.Exit(int(exitErr))
+    default:
+        _, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+        os.Exit(exitFail)
+    }
+}
+```
+
+______________________________________________________________________
 
 ## Post-Parse Initialization
 
@@ -411,47 +437,7 @@ r.Client = client // now available to all exec functions via embedded root.Confi
 if err := r.Command.Run(ctx); err != nil { ... }
 ```
 
----
-
-## Entry Point
-
-`main.go` is intentionally thin. It passes arguments, handles errors, and exits.
-`ff.ErrHelp` (user passed `-h`/`--help`) and `ff.ErrNoExec` (no subcommand given)
-are not failures — treat both as success.
-
-```go
-// main.go
-package main
-
-import (
-    "context"
-    "errors"
-    "fmt"
-    "os"
-
-    "github.com/peterbourgon/ff/v4"
-    "<org>/<repo>/cmd"
-)
-
-const (
-    exitFail    = 1
-    exitSuccess = 0
-)
-
-func main() {
-    ctx := context.Background()
-    err := cmd.Run(ctx, os.Args[1:], os.Stdout, os.Stderr)
-    switch {
-    case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
-        os.Exit(exitSuccess)
-    default:
-        fmt.Fprintf(os.Stderr, "error: %+v\n", err)
-        os.Exit(exitFail)
-    }
-}
-```
-
----
+______________________________________________________________________
 
 ## Code Generation
 
@@ -459,43 +445,162 @@ The `climax` tool scaffolds and extends applications that follow this spec.
 
 ### `climax init [FLAGS] [path]`
 
-Creates a new application at `path` (default: current directory). The path must
-be inside a Go module. Flags:
+Creates a new application skeleton at `path` (default: `.`). The path must be
+inside an existing Go module. Generated files, in order:
 
-| Flag | Default | Description |
-|---|---|---|
-| `--name` | last import path segment | `ff.Command.Name` for the root command (allows hyphens) |
-| `--short` | `"TODO: describe <name> here"` | `ff.Command.ShortHelp` for the root command |
-| `--long` | _(omitted)_ | `ff.Command.LongHelp` for the root command |
-| `--root-pkg` | `root` | Go package name and file basename for the root config package |
-| `--no-version` | false | Skip generating `cmd/version/version.go` |
+1. `main.go`
+2. `cmd/cmd.go`
+3. `cmd/<root-pkg>/<root-pkg>.go`
+4. `cmd/version/version.go` (unless `--no-version`)
+
+| Flag           | Default                        | Description                                                   |
+| -------------- | ------------------------------ | ------------------------------------------------------------- |
+| `--name`       | last import path segment       | `ff.Command.Name` for the root command (allows hyphens)       |
+| `--short`      | `"TODO: describe <name> here"` | `ff.Command.ShortHelp` for the root command                   |
+| `--long`       | _(omitted)_                    | `ff.Command.LongHelp` for the root command                    |
+| `--root-pkg`   | `root`                         | Go package name and file basename for the root config package |
+| `--no-version` | false                          | Skip generating `cmd/version/version.go`                      |
+
+Output:
+
+```
+initialized climax app at /path/to/app (import: github.com/yourname/app)
+  created main.go
+  created cmd/cmd.go
+  created cmd/root/root.go
+  created cmd/version/version.go
+```
 
 ### `climax add [FLAGS] <name> [path]`
 
-Creates `cmd/<name>/<name>.go` and registers it in `cmd/cmd.go`. `<name>` must
-be a valid Go identifier (used as the package name). Flags:
+Creates `cmd/<name>/<name>.go` and registers it in the dispatcher. `<name>`
+must be a valid Go identifier (used as the package name). `[path]` must be the
+root of an existing climax application.
 
-| Flag | Default | Description |
-|---|---|---|
-| `--name` | same as `<name>` | `ff.Command.Name` for the new command (allows hyphens) |
-| `--short` | `"<name> command"` | `ff.Command.ShortHelp` for the new command |
-| `--long` | `"<Name> is a new command."` | `ff.Command.LongHelp` for the new command |
+| Flag             | Default                      | Description                                              |
+| ---------------- | ---------------------------- | -------------------------------------------------------- |
+| `--name`         | same as `<name>`             | `ff.Command.Name` for the new command (allows hyphens)   |
+| `--short`        | `"<name> command"`           | `ff.Command.ShortHelp` for the new command               |
+| `--long`         | `"<Name> is a new command."` | `ff.Command.LongHelp` for the new command                |
+| `-p`, `--parent` | root package                 | Go package name of the parent command (for nesting)      |
+
+The CLI name used in `Usage` strings is resolved in this order:
+1. `// climax:name` marker in the dispatcher
+2. `Name` field of the root `ff.Command`, extracted via AST from `cmd/<root-pkg>/<root-pkg>.go`
+3. Last segment of the import path
+
+Registration uses AST analysis to locate the correct insertion point, so it
+works even when marker comments have been removed or the file is named `command.go`.
+
+Output:
+
+```
+added command "serve"
+  created  cmd/serve/serve.go
+  modified cmd/cmd.go
+```
 
 ### Persistence markers
 
-`climax add` reads two marker comments from `cmd/cmd.go` to reconstruct values
-set at `init` time:
+`climax init` writes two marker comments to the dispatcher that carry values
+needed by subsequent `climax add` runs:
 
 ```go
-// climax:name <cli-name>    // the ff.Command.Name used for the root command
-// climax:root-pkg <pkg>     // the root config package name (default: root)
+// climax:name <cli-name>   // ff.Command.Name used for the root command
+// climax:root-pkg <pkg>    // root config package name (default: root)
 ```
 
-These markers are written by `climax init` and must not be removed. They are
-also used by `climax add` to verify the file is a valid climax app root (along
-with `// climax:imports` and `// register new commands here`).
+When both markers are present, `climax add` uses text insertion at the marker
+positions. When one or both are absent, it falls back to full AST analysis of
+the dispatcher to determine insertion points — which requires that the file still
+has a parenthesized import block, a top-level `func Run`, a root assignment
+(`r := root.New(...)`), and a `r.Command.Parse(...)` call.
 
----
+### `climax lint [path]`
+
+Checks a climax application for structural drift from the current scaffold
+templates. Issues are grouped by file; at most three can be reported — one per
+structural group:
+
+| Group | File | Properties checked |
+|---|---|---|
+| 1 | `main.go` | `signal.NotifyContext`, separate `run()` function, `os.Stdin` passed to `cmd.Run` |
+| 2 | `cmd/cmd.go` | `stdin io.Reader` parameter in `Run`, `stdin` forwarded to `root.New` |
+| 3 | `cmd/<root>/<root>.go` | `Stdin io.Reader` field in `Config`, `stdin io.Reader` parameter in `New`, `cfg.Stdin = stdin` assignment |
+
+All three properties in a group must be present to suppress that group's issue.
+Each issue is shown as a focused unified diff. Exits with status 1 when any issues
+are found.
+
+Success output:
+
+```
+✓  No structural drift found.
+```
+
+Failure output:
+
+```
+⚠  2 structural issue(s) found in /path/to/app
+
+── main.go: signal-safe shutdown, run() separation, os.Stdin
+
+   --- a/main.go
+   +++ b/main.go	(expected per climax template)
+   @@ structural pattern @@
+   ...
+```
+
+### `climax update [--apply] [path]`
+
+A **climax development tool** — detects drift between climax's own source files
+and the scaffold template files in `pkg/scaffold/templates/`. Only runs against
+the climax module itself (`github.com/StevenACoffman/climax`). Run after changing
+a structural pattern in `main.go`, `cmd/cmd.go`, or `cmd/root/root.go`.
+
+Eight structural properties are checked independently (vs. three groups in `lint`):
+
+| File | Properties |
+|---|---|
+| `main.go` | `signal.NotifyContext`, `run()` separation, `os.Stdin` passed to `cmd.Run` |
+| `cmd/cmd.go` | `stdin io.Reader` parameter in `Run`, `stdin` forwarded to `root.New` |
+| `cmd/root/root.go` | `Stdin io.Reader` field, `stdin io.Reader` parameter in `New`, `cfg.Stdin = stdin` assignment |
+
+Without `--apply`, prints a drift report and exits non-zero:
+
+```
+Drift detected: 2 item(s) (2 fixable with --apply)
+
+  ✗  main    signal.NotifyContext
+  ✗  cmd     stdin io.Reader parameter in Run
+
+Run with --apply to patch the template files automatically.
+```
+
+Items where the template has a property the source does not are flagged for
+manual review (prefix `⚠`) and are never auto-patched. With `--apply`, fixable
+items (`✗`) are patched in-place in the template files.
+
+### `climax version [--json]`
+
+Prints build and version information for the `climax` binary itself, read from
+the embedded module build info:
+
+```
+GitVersion:    v0.3.1
+GitCommit:     a1b2c3d4e5f6...
+GitTreeState:  clean
+BuildDate:     2025-11-01T12:00:00
+BuiltBy:       goreleaser
+GoVersion:     go1.24.0
+Compiler:      gc
+ModuleSum:     h1:...
+Platform:      darwin/arm64
+```
+
+Use `--json` for machine-readable output.
+
+______________________________________________________________________
 
 ## Constraints
 
@@ -506,19 +611,18 @@ with `// climax:imports` and `// register new commands here`).
 | No `init()` for registration | `New()` calls in `cmd.go` are explicit and easy to trace |
 | Config struct per command | Carries parsed flag values and inherited I/O; avoids global state |
 | Flag values bound in `New()`, not in `exec` | Flags are parsed before `exec` is called; binding in `exec` is too late |
-| `SetParent` on every subcommand flag set | Allows parent flags (e.g. `--verbose`) to be accepted at any subcommand level |
-| Never use `os.Stdout`/`os.Stderr` directly | Write to `cfg.Stdout`/`cfg.Stderr` (from `root.Config`) for testability |
-| Errors bubble to `main` | Commands don't call `os.Exit`; only `main` controls exit codes |
-| `Name` is the dispatch key | It must match what the user types (case-insensitive) |
-| `cmd` package is not a binary | It is a dispatcher package imported by `main`, not a standalone binary |
-| `ff.ErrHelp` and `ff.ErrNoExec` are success | Handle both in `main`'s switch; do not propagate as failures |
+| `SetParent` on every subcommand flag set | Allows parent flags to be accepted at any subcommand depth |
+| Never use `os.Stdout`/`os.Stderr` directly | Write to `cfg.Stdout`/`cfg.Stderr` for testability |
+| Return `root.ExitError`, not `os.Exit` | Commands don't control the process; only `run()` in `main.go` calls `os.Exit` |
+| Errors bubble to `main` | `run()` is the single place that maps errors to exit codes |
+| `ff.ErrHelp` and `ff.ErrNoExec` are success | Handle both in `run()`'s switch; do not propagate as failures |
 
----
+______________________________________________________________________
 
 ## Checklist: Adding a New Command
 
 - [ ] Create `cmd/<name>/` package
-- [ ] Define `Config` struct embedding `*root.Config`, with command-local flag value fields
+- [ ] Define `Config` struct embedding `*root.Config` (or `*<parent>.Config` for nesting), with command-local flag value fields
 - [ ] Write `New(parent *root.Config) *Config` that:
   - creates `ff.NewFlagSet("<name>").SetParent(parent.Flags)`
   - binds flag values to `Config` fields

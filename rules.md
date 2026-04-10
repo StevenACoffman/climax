@@ -1,17 +1,19 @@
 # Go Application Rules
 
 Unified rules derived from:
+
 - [Ben Johnson](./benbjohnson_rules.md)'s gobeyond.dev series on Go application design
 - [Mat Ryer](./matryer_rules)'s "https://grafana.com/blog/how-i-write-http-services-in-go-after-13-years/"
 - [Mitchell Hashimoto](./mitchelh_rules.md)'s "https://www.youtube.com/watch?v=8hQG7QlcLBk" (GopherCon 2017)
 
----
+______________________________________________________________________
 
 ## Do Not
 
 These are the highest-priority rules. They represent the most common mistakes.
 
 **Architecture**
+
 - Do not put domain types in subpackages — they belong in the root package.
 - Do not group packages by type (`models/`, `controllers/`, `handlers/`) — group by dependency instead.
 - Do not allow the root package to import any other package in the application.
@@ -21,9 +23,22 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not enforce authorization in HTTP handlers or middleware — enforce it in service implementations, embedded in SQL where possible.
 - Do not call `os.Exit` anywhere except `main`. Return errors up the stack.
 
+**CLI**
+
+- Do not use other CLI frameworks (cobra, urfave/cli, etc.). Use `github.com/peterbourgon/ff/v4`.
+- Do not use interfaces for command polymorphism. Use the `ff.Command` struct with the Config struct pattern.
+- Do not call `Parse`, `Run`, or any other method on `ff.Command` from command packages. Those are called by the dispatcher in `cmd/cmd.go`.
+- Do not register commands in `init()` or globals. Call `New()` in `cmd/cmd.go` only.
+- Do not bind flag values inside `exec`. Bind them in `New()` — they are already parsed before `exec` is called.
+- Do not call `os.Exit` inside a command. Return errors; only `main` controls exit codes.
+- Do not use `os.Stdout` / `os.Stderr` directly. Write to `cfg.Stdout` / `cfg.Stderr` (from `root.Config`).
+- Do not treat `ff.ErrHelp` or `ff.ErrNoExec` as failures. Handle both as success in `main`.
+- Error strings: lowercase, no trailing punctuation, format `<command>: <reason>`.
+
 **HTTP**
+
 - Do not make handlers methods on a server struct. Use maker funcs that take dependencies as arguments.
-- Do not use the global `flag` package. Use `flag.NewFlagSet` inside `run`.
+- Do not use the global `flag` package. For HTTP applications, use `flag.NewFlagSet` inside `run`. For CLI applications, use `github.com/peterbourgon/ff/v4`.
 - Do not use `t.SetEnv` in tests. Use the `getenv` parameter instead.
 - Do not store durable state in handler closures. Use a database.
 - Do not put fallible setup in `addRoutes`. Resolve errors in `run` before calling it.
@@ -32,6 +47,7 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not repeat middleware dependency arguments on every `mux.Handle` call. Use a constructor that closes over dependencies once.
 
 **SQL**
+
 - Do not use ORMs — use `database/sql` directly.
 - Do not expose transactions to callers of a service — transactions are an implementation detail.
 - Do not return `(nil, nil)` from a function that looks up a single entity by ID.
@@ -39,6 +55,7 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not interpolate caller-supplied strings into SQL queries — use parameterized queries.
 
 **Testing**
+
 - Do not use third-party testing frameworks — use the stdlib `testing` package only.
 - Do not return errors from test helpers — call `t.Fatalf` inside the helper.
 - Do not omit `t.Helper()` from test helpers.
@@ -48,7 +65,7 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not test unexported functions as the primary testing strategy.
 - Do not write unit tests that duplicate assertions already covered by an end-to-end test.
 
----
+______________________________________________________________________
 
 ## Project Layout
 
@@ -81,6 +98,7 @@ myapp/                    — root package: domain types, interfaces, Error type
 ```
 
 **Rules:**
+
 - The root package name matches the application name (e.g., `package myapp`).
 - Each subpackage is named after the dependency it wraps: `sqlite`, `http`, `mock`.
 - It is acceptable to name a package the same as its wrapped stdlib package (e.g., `http`) because the two are never used in the same file.
@@ -90,11 +108,12 @@ myapp/                    — root package: domain types, interfaces, Error type
 - Put the most important type at the top of the file; lesser types below.
 - If a package exceeds ~10,000 SLOC total, evaluate whether it should be split into separate projects.
 
----
+______________________________________________________________________
 
 ## Root Package: Domain Types and Interfaces
 
 The root package defines the application's domain language. It contains only:
+
 - Plain data structs with no external dependencies
 - Service interfaces
 - The `Error` type and error helpers
@@ -108,56 +127,57 @@ import "context"
 
 // User represents an application user.
 type User struct {
-    ID    int
-    Name  string
-    Email string
+	ID    int
+	Name  string
+	Email string
 }
 
 // UserService defines operations on users.
 // Implementations live in subpackages (sqlite, postgres, mock).
 type UserService interface {
-    // FindUserByID retrieves a user by ID.
-    // Returns ENOTFOUND if the user does not exist.
-    FindUserByID(ctx context.Context, id int) (*User, error)
+	// FindUserByID retrieves a user by ID.
+	// Returns ENOTFOUND if the user does not exist.
+	FindUserByID(ctx context.Context, id int) (*User, error)
 
-    // FindUsers retrieves a list of users matching filter.
-    // Also returns the total count of matching users regardless of Limit/Offset.
-    FindUsers(ctx context.Context, filter UserFilter) ([]*User, int, error)
+	// FindUsers retrieves a list of users matching filter.
+	// Also returns the total count of matching users regardless of Limit/Offset.
+	FindUsers(ctx context.Context, filter UserFilter) ([]*User, int, error)
 
-    // CreateUser creates a new user.
-    // On success, user.ID and timestamps are populated on the input struct.
-    CreateUser(ctx context.Context, user *User) error
+	// CreateUser creates a new user.
+	// On success, user.ID and timestamps are populated on the input struct.
+	CreateUser(ctx context.Context, user *User) error
 
-    // UpdateUser updates an existing user by ID.
-    // Returns the updated user even if an error occurs.
-    // Returns ENOTFOUND if the user does not exist.
-    // Returns EUNAUTHORIZED if the caller does not own the user.
-    UpdateUser(ctx context.Context, id int, upd UserUpdate) (*User, error)
+	// UpdateUser updates an existing user by ID.
+	// Returns the updated user even if an error occurs.
+	// Returns ENOTFOUND if the user does not exist.
+	// Returns EUNAUTHORIZED if the caller does not own the user.
+	UpdateUser(ctx context.Context, id int, upd UserUpdate) (*User, error)
 
-    // DeleteUser permanently removes a user by ID.
-    // Returns ENOTFOUND if the user does not exist.
-    // Returns EUNAUTHORIZED if the caller does not own the user.
-    DeleteUser(ctx context.Context, id int) error
+	// DeleteUser permanently removes a user by ID.
+	// Returns ENOTFOUND if the user does not exist.
+	// Returns EUNAUTHORIZED if the caller does not own the user.
+	DeleteUser(ctx context.Context, id int) error
 }
 
 // UserFilter filters results from FindUsers.
 type UserFilter struct {
-    ID    *int    // optional
-    Email *string // optional
+	ID    *int    // optional
+	Email *string // optional
 
-    Offset int
-    Limit  int
+	Offset int
+	Limit  int
 }
 
 // UserUpdate holds the fields that can be updated on a user.
 // Pointer fields are optional — nil means do not change.
 type UserUpdate struct {
-    Name  *string
-    Email *string
+	Name  *string
+	Email *string
 }
 ```
 
 **Rules:**
+
 - Domain structs reference only primitive types and other domain types.
 - No `database/sql`, `net/http`, or any other external import in the root package.
 - Service interfaces live alongside the types they operate on, in the same file.
@@ -165,7 +185,7 @@ type UserUpdate struct {
 - Filter structs use pointer fields so each field is independently optional.
 - Update structs use pointer fields so partial updates are expressible without a separate endpoint.
 
----
+______________________________________________________________________
 
 ## Error Type
 
@@ -176,71 +196,72 @@ Define one `Error` type in the root package.
 package myapp
 
 import (
-    "bytes"
-    "fmt"
+	"bytes"
+	"fmt"
 )
 
 // Application error codes.
 const (
-    ECONFLICT     = "conflict"     // action cannot be performed
-    EINTERNAL     = "internal"     // internal error
-    EINVALID      = "invalid"      // validation failed
-    ENOTFOUND     = "not_found"    // entity does not exist
-    EUNAUTHORIZED = "unauthorized" // caller lacks permission
+	ECONFLICT     = "conflict"     // action cannot be performed
+	EINTERNAL     = "internal"     // internal error
+	EINVALID      = "invalid"      // validation failed
+	ENOTFOUND     = "not_found"    // entity does not exist
+	EUNAUTHORIZED = "unauthorized" // caller lacks permission
 )
 
 // Error defines a standard application error.
 type Error struct {
-    Code    string // machine-readable error code
-    Message string // human-readable message for end users
-    Op      string // logical operation, e.g. "sqlite.UserService.FindUserByID"
-    Err     error  // nested error
+	Code    string // machine-readable error code
+	Message string // human-readable message for end users
+	Op      string // logical operation, e.g. "sqlite.UserService.FindUserByID"
+	Err     error  // nested error
 }
 
 func (e *Error) Error() string {
-    var buf bytes.Buffer
-    if e.Op != "" {
-        fmt.Fprintf(&buf, "%s: ", e.Op)
-    }
-    if e.Err != nil {
-        buf.WriteString(e.Err.Error())
-    } else {
-        if e.Code != "" {
-            fmt.Fprintf(&buf, "<%s> ", e.Code)
-        }
-        buf.WriteString(e.Message)
-    }
-    return buf.String()
+	var buf bytes.Buffer
+	if e.Op != "" {
+		fmt.Fprintf(&buf, "%s: ", e.Op)
+	}
+	if e.Err != nil {
+		buf.WriteString(e.Err.Error())
+	} else {
+		if e.Code != "" {
+			fmt.Fprintf(&buf, "<%s> ", e.Code)
+		}
+		buf.WriteString(e.Message)
+	}
+	return buf.String()
 }
 
 // ErrorCode returns the code of the root error, or EINTERNAL if none is set.
 func ErrorCode(err error) string {
-    if err == nil {
-        return ""
-    }
-    if e, ok := err.(*Error); ok && e.Code != "" {
-        return e.Code
-    } else if ok && e.Err != nil {
-        return ErrorCode(e.Err)
-    }
-    return EINTERNAL
+	if err == nil {
+		return ""
+	}
+	if e, ok := err.(*Error); ok && e.Code != "" {
+		return e.Code
+	} else if ok && e.Err != nil {
+		return ErrorCode(e.Err)
+	}
+	return EINTERNAL
 }
 
 // ErrorMessage returns the human-readable message, or a generic fallback.
 func ErrorMessage(err error) string {
-    if err == nil {
-        return ""
-    }
-    if e, ok := err.(*Error); ok && e.Message != "" {
-        return e.Message
-    } else if ok && e.Err != nil {
-        return ErrorMessage(e.Err)
-    }
-    return "An internal error has occurred. Please contact technical support."
+	if err == nil {
+		return ""
+	}
+	if e, ok := err.(*Error); ok && e.Message != "" {
+		return e.Message
+	} else if ok && e.Err != nil {
+		return ErrorMessage(e.Err)
+	}
+	return "An internal error has occurred. Please contact technical support."
 }
 ```
 
 **Rules:**
+
 - Start with five codes. Add more only as needed.
 - A wrapping error carries `Op` + `Err`. A leaf error carries `Code` + `Message`. Never both.
 - Translate all external errors (e.g., `sql.ErrNoRows`) to domain codes at the implementation boundary.
@@ -252,20 +273,21 @@ Every significant function wraps errors with its `Op` name using the format `"pa
 
 ```go
 func (s *UserService) CreateUser(ctx context.Context, user *myapp.User) error {
-    const op = "sqlite.UserService.CreateUser"
-    if err := s.insertUser(ctx, user); err != nil {
-        return &myapp.Error{Op: op, Err: err}
-    }
-    return nil
+	const op = "sqlite.UserService.CreateUser"
+	if err := s.insertUser(ctx, user); err != nil {
+		return &myapp.Error{Op: op, Err: err}
+	}
+	return nil
 }
 ```
 
 The resulting `Error()` string is a single-line logical stack trace:
+
 ```
 sqlite.UserService.CreateUser: sqlite.insertUser: near "INSERT": syntax error
 ```
 
----
+______________________________________________________________________
 
 ## Authentication via Context
 
@@ -280,23 +302,24 @@ type contextKey int
 const userContextKey contextKey = iota
 
 func NewContextWithUser(ctx context.Context, user *User) context.Context {
-    return context.WithValue(ctx, userContextKey, user)
+	return context.WithValue(ctx, userContextKey, user)
 }
 
 func UserFromContext(ctx context.Context) *User {
-    u, _ := ctx.Value(userContextKey).(*User)
-    return u
+	u, _ := ctx.Value(userContextKey).(*User)
+	return u
 }
 
 func UserIDFromContext(ctx context.Context) int {
-    if u := UserFromContext(ctx); u != nil {
-        return u.ID
-    }
-    return 0
+	if u := UserFromContext(ctx); u != nil {
+		return u.ID
+	}
+	return 0
 }
 ```
 
 **Rules:**
+
 - The HTTP layer sets the user on the context after authentication.
 - Service implementations extract the user from context to apply authorization.
 - Authorization is enforced at the lowest level — embedded in SQL `WHERE` clauses so the database enforces it.
@@ -304,16 +327,16 @@ func UserIDFromContext(ctx context.Context) int {
 ```go
 // sqlite/dial.go — authorization embedded in the query, not in the HTTP handler
 func findDials(ctx context.Context, tx *Tx, filter myapp.DialFilter) ([]*myapp.Dial, int, error) {
-    userID := myapp.UserIDFromContext(ctx)
-    where := []string{"1 = 1"}
-    args := []interface{}{}
-    where = append(where, `id IN (SELECT dial_id FROM dial_memberships WHERE user_id = ?)`)
-    args = append(args, userID)
-    // ...
+	userID := myapp.UserIDFromContext(ctx)
+	where := []string{"1 = 1"}
+	args := []interface{}{}
+	where = append(where, `id IN (SELECT dial_id FROM dial_memberships WHERE user_id = ?)`)
+	args = append(args, userID)
+	// ...
 }
 ```
 
----
+______________________________________________________________________
 
 ## Subpackages: Dependency Adapters
 
@@ -324,30 +347,31 @@ Each subpackage wraps one external dependency and implements one or more domain 
 package sqlite
 
 import (
-    "context"
-    "myapp"
+	"context"
+	"myapp"
 )
 
 type UserService struct {
-    db *DB
+	db *DB
 }
 
 func (s *UserService) FindUserByID(ctx context.Context, id int) (*myapp.User, error) {
-    tx, err := s.db.BeginTx(ctx, nil)
-    if err != nil {
-        return nil, err
-    }
-    defer tx.Rollback()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 
-    user, err := findUserByID(ctx, tx, id)
-    if err != nil {
-        return nil, err
-    }
-    return user, nil
+	user, err := findUserByID(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
 }
 ```
 
 **Rules:**
+
 - Subpackages never import each other.
 - All service methods follow the same shape: begin transaction → call helpers → commit.
 - Because all implementations satisfy the same root-package interface, they can be stacked with caching or decorator wrappers.
@@ -367,7 +391,7 @@ func NewUserCache(service UserService) *UserCache {
 userService := myapp.NewUserCache(&sqlite.UserService{DB: db})
 ```
 
----
+______________________________________________________________________
 
 ## Program Entry Point
 
@@ -375,11 +399,11 @@ userService := myapp.NewUserCache(&sqlite.UserService{DB: db})
 
 ```go
 func main() {
-    ctx := context.Background()
-    if err := run(ctx, os.Args, os.Getenv, os.Stdin, os.Stdout, os.Stderr); err != nil {
-        fmt.Fprintf(os.Stderr, "%s\n", err)
-        os.Exit(1)
-    }
+	ctx := context.Background()
+	if err := run(ctx, os.Args, os.Getenv, os.Stdin, os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		os.Exit(1)
+	}
 }
 ```
 
@@ -387,33 +411,323 @@ func main() {
 
 ```go
 func run(
-    ctx    context.Context,
-    args   []string,
-    getenv func(string) string,
-    stdin  io.Reader,
-    stdout, stderr io.Writer,
+	ctx context.Context,
+	args []string,
+	getenv func(string) string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
 ) error {
-    ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
-    defer cancel()
-    // parse flags, build dependencies, call NewServer, start httpServer
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
+	defer cancel()
+	// parse flags, build dependencies, call NewServer, start httpServer
 }
 ```
 
-| Parameter | `main` passes | Test passes |
-|---|---|---|
-| `ctx` | `context.Background()` | `context.WithCancel(...)` |
-| `args` | `os.Args` | custom `[]string` |
-| `getenv` | `os.Getenv` | custom func |
-| `stdin` | `os.Stdin` | `strings.NewReader(...)` |
-| `stdout` | `os.Stdout` | `&bytes.Buffer{}` |
-| `stderr` | `os.Stderr` | `io.Discard` |
+| Parameter | `main` passes          | Test passes               |
+| --------- | ---------------------- | ------------------------- |
+| `ctx`     | `context.Background()` | `context.WithCancel(...)` |
+| `args`    | `os.Args`              | custom `[]string`         |
+| `getenv`  | `os.Getenv`            | custom func               |
+| `stdin`   | `os.Stdin`             | `strings.NewReader(...)`  |
+| `stdout`  | `os.Stdout`            | `&bytes.Buffer{}`         |
+| `stderr`  | `os.Stderr`            | `io.Discard`              |
 
 **Rules:**
+
 - `signal.NotifyContext` goes inside `run`, not `main`, so `cancel` is deferred.
 - Use `flag.NewFlagSet(args[0], flag.ContinueOnError)` and pass `args[1:]` to it. Never use the global `flag` package.
 - Use the `getenv` parameter instead of calling `os.Getenv` directly.
 
----
+______________________________________________________________________
+
+## CLI Commands
+
+Use `github.com/peterbourgon/ff/v4` (`ff`). Do not use cobra, urfave/cli, or any other CLI framework. Do not use interfaces for command polymorphism — use `ff.Command` with the Config struct pattern below.
+
+### Directory Structure
+
+Generated by `climax init`:
+
+```
+/
+├── main.go                        # Entry point only — no logic
+├── go.mod
+└── cmd/
+    ├── cmd.go                     # Dispatcher and command registration (package cmd)
+    ├── root/                      # Default name; configurable via climax init --root-pkg
+    │   └── root.go                # Config: shared I/O, flags, and root ff.Command
+    ├── version/
+    │   └── version.go             # Version command (omit with climax init --no-version)
+    └── <name>/
+        └── <name>.go              # One package per command (added by climax add)
+```
+
+For applications with domain packages, add a `pkg/` directory alongside `cmd/`:
+
+```
+/
+├── main.go
+├── go.mod
+├── cmd/
+│   ├── cmd.go
+│   ├── root/
+│   │   └── root.go
+│   ├── version/
+│   │   └── version.go
+│   └── <name>/
+│       └── <name>.go
+└── pkg/
+    ├── <domain>/                  # Domain logic, types, interfaces
+    │   └── <domain>.go
+    └── <adapter>/                 # External dependency adapters
+        └── <adapter>.go
+```
+
+**Note:** `init` is a reserved Go keyword. A command whose `ff.Command.Name` is `init` must use a different package name (e.g. `initialize`). Use `climax add initialize --name init` and import it with an alias in `cmd/cmd.go`:
+
+```go
+initialize "github.com/<org>/<repo>/cmd/initialize"
+```
+
+### Root Config
+
+`cmd/root/root.go` defines `Config`. It holds shared I/O writers, any flags shared across all commands, and the root `ff.Command`. Subcommand configs embed `*root.Config` to inherit these.
+
+`Flags` is `nil` by default — `ff` provides `--help` automatically with no flag set. Uncomment and extend only when you add the first shared flag.
+
+```go
+// cmd/root/root.go
+package root
+
+import (
+	"io"
+
+	"github.com/peterbourgon/ff/v4"
+)
+
+// Config holds shared I/O writers and the root ff.Command.
+// All subcommand configs embed *Config to inherit these.
+type Config struct {
+	Stdout  io.Writer
+	Stderr  io.Writer
+	Flags   *ff.FlagSet
+	Command *ff.Command
+}
+
+// New returns a new root Config with the given I/O writers.
+func New(stdout, stderr io.Writer) *Config {
+	var cfg Config
+	cfg.Stdout = stdout
+	cfg.Stderr = stderr
+	// No shared flags — cfg.Flags is nil; ff provides --help automatically.
+	// To add shared flags, uncomment and bind before constructing the command:
+	// cfg.Flags = ff.NewFlagSet("<cli-name>")
+	// cfg.Flags.BoolVar(&cfg.MyFlag, 0, "my-flag", "", "description")
+	cfg.Command = &ff.Command{
+		Name:      "<cli-name>",
+		Usage:     "<cli-name> <SUBCOMMAND> ...",
+		ShortHelp: "<one-line description of the program>",
+	}
+	return &cfg
+}
+```
+
+When shared flags are added, also set `Flags: cfg.Flags` on the `ff.Command` and update `Usage` to include `[FLAGS]`.
+
+### Command Template
+
+This is the exact output of `climax add <name>`:
+
+```go
+// cmd/<name>/<name>.go
+package <name>
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/peterbourgon/ff/v4"
+	"<org>/<repo>/cmd/root"
+)
+
+// Config holds the configuration for the <name> command.
+type Config struct {
+	*root.Config
+	Flags   *ff.FlagSet
+	Command *ff.Command
+}
+
+// New creates and registers the <name> command with the given parent config.
+func New(parent *root.Config) *Config {
+	var cfg Config
+	cfg.Config = parent
+	cfg.Flags = ff.NewFlagSet("<name>").SetParent(parent.Flags)
+	// bind flags: cfg.Flags.StringVar(&cfg.SomeFlag, 0, "some-flag", "", "description")
+	cfg.Command = &ff.Command{
+		Name:      "<name>",
+		Usage:     "<cli-name> <name> [FLAGS]",
+		ShortHelp: "<one-line description>",
+		LongHelp:  "<Name> is a new command.",
+		Flags:     cfg.Flags,
+		Exec:      cfg.exec,
+	}
+	parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
+	return &cfg
+}
+
+func (cfg *Config) exec(_ context.Context, _ []string) error {
+	// TODO: implement <name>.
+	// Rename the second parameter from _ to args to access positional arguments.
+	_, _ = fmt.Fprintln(cfg.Stdout, "<name>: not yet implemented")
+	return nil
+}
+```
+
+**Rules:**
+
+- `New` and `Config` are the only exported symbols in the package.
+- `New` appends the command to `parent.Command.Subcommands` — no other registration needed.
+- `Name` is matched case-insensitively when the user types a subcommand. It must be unique across all subcommands.
+- Flag values are bound to `Config` fields in `New()`, not inside `exec`.
+- `exec` reads already-parsed flag values. Never call `Parse` or `fs.Parse` inside `exec`.
+- `SetParent(parent.Flags)` must be called on every subcommand flag set so that parent flags (e.g. `--verbose`) are accepted at any level.
+- Write to `cfg.Stdout` / `cfg.Stderr`. Never use `os.Stdout` / `os.Stderr` directly.
+- Return `error`. Do not call `os.Exit` inside a command.
+- Error strings: lowercase, no trailing punctuation, format `<command>: <reason>`.
+
+### Registering Commands
+
+`cmd/cmd.go` is the **only place `New()` is called**. It constructs the root config, calls each subcommand's `New()` in registration order (which controls help output order), and exposes `Run` for `main`.
+
+```go
+// Package cmd is the dispatcher; it routes CLI arguments to the matching command.
+package cmd
+
+// climax:name <cli-name>
+// climax:root-pkg root
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+
+	"<org>/<repo>/cmd/root"
+	"<org>/<repo>/cmd/version"
+	"github.com/peterbourgon/ff/v4"
+	"github.com/peterbourgon/ff/v4/ffhelp"
+	// climax:imports
+)
+
+// Run parses args and dispatches to the matching command.
+// args must not include the executable name (pass os.Args[1:]).
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	r := root.New(stdout, stderr)
+	version.New(r)
+	// register new commands here
+
+	if err := r.Command.Parse(args); err != nil {
+		fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
+		return fmt.Errorf("parse: %w", err)
+	}
+
+	if err := r.Command.Run(ctx); err != nil {
+		if !errors.Is(err, ff.ErrNoExec) {
+			fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
+		}
+		return err
+	}
+
+	return nil
+}
+```
+
+**Dispatch rules:**
+
+- `Run` receives `os.Args[1:]` — executable name already removed by `main`.
+- Subcommand selection is case-insensitive match on `Name`. No prefix matching, no fuzzy matching.
+- `-h` / `--help` at any level causes `Parse` to return `ff.ErrHelp`; `main` treats this as success.
+- A command with no `Exec` causes `Run` to return `ff.ErrNoExec`; `main` treats this as success.
+- Unknown subcommand returns an error; `main` owns the exit code.
+
+### Post-Parse Initialization
+
+Because `ff` separates `Parse()` from `Run()`, dependencies that require parsed flag values (API clients, DB connections, loggers) can be initialized in `cmd.go` between the two calls and assigned to fields on `root.Config` that all subcommand configs inherit.
+
+```go
+if err := r.Command.Parse(args); err != nil { ... }
+
+client, err := api.NewClient(r.Token) // r.Token was set during Parse
+if err != nil {
+    return fmt.Errorf("construct client: %w", err)
+}
+r.Client = client // now available to all exec functions via embedded root.Config
+
+if err := r.Command.Run(ctx); err != nil { ... }
+```
+
+### Entry Point (CLI)
+
+```go
+// Package main is the entry point for the CLI.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+
+	"<org>/<repo>/cmd"
+	"github.com/peterbourgon/ff/v4"
+)
+
+const (
+	exitFail    = 1
+	exitSuccess = 0
+)
+
+func main() {
+	ctx := context.Background()
+	err := cmd.Run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	switch {
+	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
+		os.Exit(exitSuccess)
+	default:
+		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		os.Exit(exitFail)
+	}
+}
+```
+
+### Constraints
+
+| Rule                                        | Rationale                                                                     |
+| ------------------------------------------- | ----------------------------------------------------------------------------- |
+| Use `ff`; no other CLI frameworks           | `ff` provides flags, subcommand dispatch, and help with minimal surface area  |
+| No Commander interface                      | Go composition via `Exec` function pointer is sufficient                      |
+| No `init()` for registration                | `New()` calls in `cmd.go` are explicit and easy to trace                      |
+| Config struct per command                   | Carries parsed flag values and inherited I/O; avoids global state             |
+| Flag values bound in `New()`, not in `exec` | Flags are parsed before `exec` is called; binding in `exec` is too late       |
+| `SetParent` on every subcommand flag set    | Allows parent flags (e.g. `--verbose`) to be accepted at any subcommand level |
+| Never use `os.Stdout`/`os.Stderr` directly  | Write to `cfg.Stdout`/`cfg.Stderr` for testability                            |
+| Errors bubble to `main`                     | Commands don't call `os.Exit`; only `main` controls exit codes                |
+| `ff.ErrHelp` and `ff.ErrNoExec` are success | Handle both in `main`'s switch; do not propagate as failures                  |
+
+### Checklist: Adding a New Command
+
+- [ ] Create `cmd/<name>/` package
+- [ ] Define `Config` struct embedding `*root.Config`, with command-local flag value fields
+- [ ] Write `New(parent *root.Config) *Config` that:
+  - creates `ff.NewFlagSet("<name>").SetParent(parent.Flags)`
+  - binds flag values to `Config` fields
+  - constructs `ff.Command` with `Name`, `Usage`, `ShortHelp`, `Flags`, and `Exec`
+  - appends to `parent.Command.Subcommands`
+- [ ] Write `func (cfg *Config) exec(ctx context.Context, args []string) error`
+- [ ] Call `<name>.New(r)` in the registration block in `cmd/cmd.go`
+- [ ] Add the import for the new package in `cmd/cmd.go`
+
+______________________________________________________________________
 
 ## HTTP Layer
 
@@ -423,21 +737,22 @@ func run(
 
 ```go
 func NewServer(
-    logger *Logger,
-    config *Config,
-    userService myapp.UserService,
-    dialService myapp.DialService,
+	logger *Logger,
+	config *Config,
+	userService myapp.UserService,
+	dialService myapp.DialService,
 ) http.Handler {
-    mux := http.NewServeMux()
-    addRoutes(mux, logger, config, userService, dialService)
-    var handler http.Handler = mux
-    handler = someMiddleware(handler)
-    handler = someMiddleware2(handler)
-    return handler
+	mux := http.NewServeMux()
+	addRoutes(mux, logger, config, userService, dialService)
+	var handler http.Handler = mux
+	handler = someMiddleware(handler)
+	handler = someMiddleware2(handler)
+	return handler
 }
 ```
 
 **Rules:**
+
 - Return type is `http.Handler`, not a named struct, unless the situation genuinely requires more.
 - Pass `nil` for dependencies a particular test does not exercise.
 - Global middleware (CORS, auth, logging) is applied here, not in `addRoutes`.
@@ -446,18 +761,18 @@ func NewServer(
 
 ```go
 func errorStatusCode(err error) int {
-    switch myapp.ErrorCode(err) {
-    case myapp.ENOTFOUND:
-        return http.StatusNotFound
-    case myapp.EINVALID:
-        return http.StatusBadRequest
-    case myapp.EUNAUTHORIZED:
-        return http.StatusUnauthorized
-    case myapp.ECONFLICT:
-        return http.StatusConflict
-    default:
-        return http.StatusInternalServerError
-    }
+	switch myapp.ErrorCode(err) {
+	case myapp.ENOTFOUND:
+		return http.StatusNotFound
+	case myapp.EINVALID:
+		return http.StatusBadRequest
+	case myapp.EUNAUTHORIZED:
+		return http.StatusUnauthorized
+	case myapp.ECONFLICT:
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
 }
 ```
 
@@ -467,21 +782,22 @@ All routes live in `routes.go`. This is the single place to see the full API sur
 
 ```go
 func addRoutes(
-    mux          *http.ServeMux,
-    logger       *Logger,
-    config       Config,
-    userService  myapp.UserService,
-    dialService  myapp.DialService,
+	mux *http.ServeMux,
+	logger *Logger,
+	config Config,
+	userService myapp.UserService,
+	dialService myapp.DialService,
 ) {
-    mux.Handle("/api/v1/users", handleUsersGet(logger, userService))
-    mux.Handle("/api/v1/users/", handleUserGet(logger, userService))
-    mux.Handle("/admin", adminOnly(handleAdminIndex(logger)))
-    mux.HandleFunc("/healthz", handleHealthz(logger))
-    mux.Handle("/", http.NotFoundHandler())
+	mux.Handle("/api/v1/users", handleUsersGet(logger, userService))
+	mux.Handle("/api/v1/users/", handleUserGet(logger, userService))
+	mux.Handle("/admin", adminOnly(handleAdminIndex(logger)))
+	mux.HandleFunc("/healthz", handleHealthz(logger))
+	mux.Handle("/", http.NotFoundHandler())
 }
 ```
 
 **Rules:**
+
 - `addRoutes` does not return an error. Anything fallible is resolved in `run` before this is called.
 - Always register an explicit `http.NotFoundHandler()` for `/`.
 - Always include a `/healthz` or `/readyz` endpoint.
@@ -493,16 +809,17 @@ Handlers are maker funcs: functions that take dependencies and return `http.Hand
 
 ```go
 func handleSomething(logger *Logger, store *Store) http.Handler {
-    // one-time setup runs here at registration time, not per request
-    thing := prepareThing()
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        // per-request logic
-        logger.Info(r.Context(), "handleSomething")
-    })
+	// one-time setup runs here at registration time, not per request
+	thing := prepareThing()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// per-request logic
+		logger.Info(r.Context(), "handleSomething")
+	})
 }
 ```
 
 **Rules:**
+
 - The return type is always `http.Handler`, not `http.HandlerFunc`.
 - The outer function's scope is the closure environment. Use it for one-time setup.
 - Only read shared closure data from concurrent handlers. Protect any writes with a mutex.
@@ -511,21 +828,21 @@ Defer expensive setup with `sync.Once`:
 
 ```go
 func handleTemplate(files ...string) http.Handler {
-    var (
-        init   sync.Once
-        tpl    *template.Template
-        tplerr error
-    )
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        init.Do(func() {
-            tpl, tplerr = template.ParseFiles(files...)
-        })
-        if tplerr != nil {
-            http.Error(w, tplerr.Error(), http.StatusInternalServerError)
-            return
-        }
-        // use tpl
-    })
+	var (
+		init   sync.Once
+		tpl    *template.Template
+		tplerr error
+	)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		init.Do(func() {
+			tpl, tplerr = template.ParseFiles(files...)
+		})
+		if tplerr != nil {
+			http.Error(w, tplerr.Error(), http.StatusInternalServerError)
+			return
+		}
+		// use tpl
+	})
 }
 ```
 
@@ -533,15 +850,15 @@ Declare request/response types inside the maker func if they are handler-specifi
 
 ```go
 func handleSomething() http.Handler {
-    type request struct {
-        Name string
-    }
-    type response struct {
-        Greeting string `json:"greeting"`
-    }
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        // ...
-    })
+	type request struct {
+		Name string
+	}
+	type response struct {
+		Greeting string `json:"greeting"`
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ...
+	})
 }
 ```
 
@@ -553,24 +870,25 @@ Centralize JSON encode/decode in `encode.go`. All handlers call these helpers.
 
 ```go
 func encode[T any](w http.ResponseWriter, r *http.Request, status int, v T) error {
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(status)
-    if err := json.NewEncoder(w).Encode(v); err != nil {
-        return fmt.Errorf("encode json: %w", err)
-    }
-    return nil
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		return fmt.Errorf("encode json: %w", err)
+	}
+	return nil
 }
 
 func decode[T any](r *http.Request) (T, error) {
-    var v T
-    if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
-        return v, fmt.Errorf("decode json: %w", err)
-    }
-    return v, nil
+	var v T
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+		return v, fmt.Errorf("decode json: %w", err)
+	}
+	return v, nil
 }
 ```
 
 Usage:
+
 ```go
 // encode — type inferred from argument
 err := encode(w, r, http.StatusOK, obj)
@@ -585,24 +903,25 @@ Use a single-method `Validator` interface. Request types implement it.
 
 ```go
 type Validator interface {
-    Valid(ctx context.Context) (problems map[string]string)
+	Valid(ctx context.Context) (problems map[string]string)
 }
 ```
 
 ```go
 func decodeValid[T Validator](r *http.Request) (T, map[string]string, error) {
-    var v T
-    if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
-        return v, nil, fmt.Errorf("decode json: %w", err)
-    }
-    if problems := v.Valid(r.Context()); len(problems) > 0 {
-        return v, problems, fmt.Errorf("invalid %T: %d problems", v, len(problems))
-    }
-    return v, nil, nil
+	var v T
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+		return v, nil, fmt.Errorf("decode json: %w", err)
+	}
+	if problems := v.Valid(r.Context()); len(problems) > 0 {
+		return v, problems, fmt.Errorf("invalid %T: %d problems", v, len(problems))
+	}
+	return v, nil, nil
 }
 ```
 
 **Rules:**
+
 - `Valid` returns `nil` (not an empty map) when valid.
 - Keep `Valid` to field-level checks. Database checks belong outside this method.
 - Use `decodeValid` for types that implement `Validator`; use `decode` for others.
@@ -614,13 +933,13 @@ Middleware signature: `func(http.Handler) http.Handler`. No named type alias.
 
 ```go
 func adminOnly(h http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        if !currentUser(r).IsAdmin {
-            http.NotFound(w, r)
-            return
-        }
-        h(w, r)
-    })
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !currentUser(r).IsAdmin {
+			http.NotFound(w, r)
+			return
+		}
+		h(w, r)
+	})
 }
 ```
 
@@ -647,29 +966,29 @@ mux.Handle("/route2", auth(handleSomething2(deps)))
 
 ```go
 httpServer := &http.Server{
-    Addr:    net.JoinHostPort(config.Host, config.Port),
-    Handler: srv,
+	Addr:    net.JoinHostPort(config.Host, config.Port),
+	Handler: srv,
 }
 go func() {
-    if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-        fmt.Fprintf(stderr, "error listening and serving: %s\n", err)
-    }
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Fprintf(stderr, "error listening and serving: %s\n", err)
+	}
 }()
 var wg sync.WaitGroup
 wg.Add(1)
 go func() {
-    defer wg.Done()
-    <-ctx.Done()
-    shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    defer cancel()
-    if err := httpServer.Shutdown(shutdownCtx); err != nil {
-        fmt.Fprintf(stderr, "error shutting down: %s\n", err)
-    }
+	defer wg.Done()
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintf(stderr, "error shutting down: %s\n", err)
+	}
 }()
 wg.Wait()
 ```
 
----
+______________________________________________________________________
 
 ## SQL Layer
 
@@ -698,16 +1017,16 @@ Service methods are thin. They own the transaction; helper functions own the SQL
 
 ```go
 func (s *DialService) CreateDial(ctx context.Context, dial *myapp.Dial) error {
-    tx, err := s.db.BeginTx(ctx, nil)
-    if err != nil {
-        return err
-    }
-    defer tx.Rollback()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
-    if err := createDial(ctx, tx, dial); err != nil {
-        return err
-    }
-    return tx.Commit()
+	if err := createDial(ctx, tx, dial); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 ```
 
@@ -717,17 +1036,17 @@ Helper functions are package-level (not attached to a service type) so multiple 
 
 ```go
 func createDial(ctx context.Context, tx *Tx, dial *myapp.Dial) error {
-    const op = "sqlite.createDial"
-    result, err := tx.ExecContext(ctx, `
+	const op = "sqlite.createDial"
+	result, err := tx.ExecContext(ctx, `
         INSERT INTO dials (user_id, name, created_at, updated_at)
         VALUES (?, ?, ?, ?)`,
-        dial.UserID, dial.Name, dial.CreatedAt, dial.UpdatedAt,
-    )
-    if err != nil {
-        return &myapp.Error{Op: op, Err: err}
-    }
-    dial.ID, err = result.LastInsertId()
-    return err
+		dial.UserID, dial.Name, dial.CreatedAt, dial.UpdatedAt,
+	)
+	if err != nil {
+		return &myapp.Error{Op: op, Err: err}
+	}
+	dial.ID, err = result.LastInsertId()
+	return err
 }
 ```
 
@@ -736,23 +1055,24 @@ func createDial(ctx context.Context, tx *Tx, dial *myapp.Dial) error {
 ```go
 rows, err := tx.QueryContext(ctx, query, args...)
 if err != nil {
-    return nil, 0, err
+	return nil, 0, err
 }
 defer rows.Close()
 
-dials := make([]*myapp.Dial, 0)  // make, not var — encodes as [] not null in JSON
+dials := make([]*myapp.Dial, 0) // make, not var — encodes as [] not null in JSON
 var n int
 for rows.Next() {
-    var dial myapp.Dial
-    if err := rows.Scan(&dial.ID, &dial.Name, &n); err != nil {
-        return nil, 0, err
-    }
-    dials = append(dials, &dial)
+	var dial myapp.Dial
+	if err := rows.Scan(&dial.ID, &dial.Name, &n); err != nil {
+		return nil, 0, err
+	}
+	dials = append(dials, &dial)
 }
 return dials, n, rows.Err()
 ```
 
 Three rules:
+
 1. `defer rows.Close()` immediately after a successful `QueryContext`.
 2. Initialize slices with `make([]*T, 0)` — nil slices encode as JSON `null`; empty slices as `[]`.
 3. Return `rows.Err()` after the loop — it captures errors that occurred mid-iteration.
@@ -764,18 +1084,18 @@ where := []string{"1 = 1"}
 args := []interface{}{}
 
 if v := filter.ID; v != nil {
-    where = append(where, "id = ?")
-    args = append(args, *v)
+	where = append(where, "id = ?")
+	args = append(args, *v)
 }
 if v := filter.Email; v != nil {
-    where = append(where, "email = ?")
-    args = append(args, *v)
+	where = append(where, "email = ?")
+	args = append(args, *v)
 }
 
 query := `SELECT id, name, email, COUNT(*) OVER() FROM users WHERE ` +
-    strings.Join(where, " AND ") +
-    ` ORDER BY ` + orderBy +
-    ` LIMIT ? OFFSET ?`
+	strings.Join(where, " AND ") +
+	` ORDER BY ` + orderBy +
+	` LIMIT ? OFFSET ?`
 args = append(args, filter.Limit, filter.Offset)
 ```
 
@@ -799,11 +1119,11 @@ LIMIT ? OFFSET ?
 var orderBy string
 switch filter.SortBy {
 case "name_asc":
-    orderBy = "name ASC"
+	orderBy = "name ASC"
 case "updated_at_desc":
-    orderBy = "updated_at DESC"
+	orderBy = "updated_at DESC"
 default:
-    orderBy = "id ASC"
+	orderBy = "id ASC"
 }
 ```
 
@@ -817,36 +1137,36 @@ The service method calls the helper in a loop after the primary query:
 
 ```go
 func (s *DialService) FindDials(ctx context.Context, filter myapp.DialFilter) ([]*myapp.Dial, int, error) {
-    tx, err := s.db.BeginTx(ctx, nil)
-    if err != nil {
-        return nil, 0, err
-    }
-    defer tx.Rollback()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer tx.Rollback()
 
-    dials, n, err := findDials(ctx, tx, filter)
-    if err != nil {
-        return dials, n, err
-    }
-    for _, dial := range dials {
-        if err := attachDialAssociations(ctx, tx, dial); err != nil {
-            return dials, n, err
-        }
-    }
-    return dials, n, nil
+	dials, n, err := findDials(ctx, tx, filter)
+	if err != nil {
+		return dials, n, err
+	}
+	for _, dial := range dials {
+		if err := attachDialAssociations(ctx, tx, dial); err != nil {
+			return dials, n, err
+		}
+	}
+	return dials, n, nil
 }
 
 func attachDialAssociations(ctx context.Context, tx *Tx, dial *myapp.Dial) error {
-    var err error
-    if dial.User, err = findUserByID(ctx, tx, dial.UserID); err != nil {
-        return fmt.Errorf("attach dial user: %w", err)
-    }
-    return nil
+	var err error
+	if dial.User, err = findUserByID(ctx, tx, dial.UserID); err != nil {
+		return fmt.Errorf("attach dial user: %w", err)
+	}
+	return nil
 }
 ```
 
 Always return parent associations. Include child collections only when small and almost always needed.
 
----
+______________________________________________________________________
 
 ## CRUD Conventions
 
@@ -861,13 +1181,13 @@ FindUserByID(ctx context.Context, id int) (*User, error)
 
 ```go
 func findUserByID(ctx context.Context, tx *Tx, id int) (*myapp.User, error) {
-    users, _, err := findUsers(ctx, tx, myapp.UserFilter{ID: &id})
-    if err != nil {
-        return nil, err
-    } else if len(users) == 0 {
-        return nil, &myapp.Error{Code: myapp.ENOTFOUND, Message: "User not found."}
-    }
-    return users[0], nil
+	users, _, err := findUsers(ctx, tx, myapp.UserFilter{ID: &id})
+	if err != nil {
+		return nil, err
+	} else if len(users) == 0 {
+		return nil, &myapp.Error{Code: myapp.ENOTFOUND, Message: "User not found."}
+	}
+	return users[0], nil
 }
 ```
 
@@ -909,7 +1229,7 @@ DeleteUser(ctx context.Context, id int) error
 - Delete by primary key.
 - Enforce authorization inside the implementation using `UserIDFromContext`.
 
----
+______________________________________________________________________
 
 ## Mock Package
 
@@ -920,23 +1240,23 @@ The mock package provides hand-written mocks for testing. No third-party mock li
 package mock
 
 import (
-    "context"
-    "myapp"
+	"context"
+	"myapp"
 )
 
 type UserService struct {
-    FindUserByIDFn      func(ctx context.Context, id int) (*myapp.User, error)
-    FindUserByIDInvoked bool
+	FindUserByIDFn      func(ctx context.Context, id int) (*myapp.User, error)
+	FindUserByIDInvoked bool
 
-    CreateUserFn      func(ctx context.Context, user *myapp.User) error
-    CreateUserInvoked bool
+	CreateUserFn      func(ctx context.Context, user *myapp.User) error
+	CreateUserInvoked bool
 
-    // one Fn + Invoked pair per interface method
+	// one Fn + Invoked pair per interface method
 }
 
 func (s *UserService) FindUserByID(ctx context.Context, id int) (*myapp.User, error) {
-    s.FindUserByIDInvoked = true
-    return s.FindUserByIDFn(ctx, id)
+	s.FindUserByIDInvoked = true
+	return s.FindUserByIDFn(ctx, id)
 }
 ```
 
@@ -945,19 +1265,20 @@ Usage in tests:
 ```go
 var svc mock.UserService
 svc.FindUserByIDFn = func(ctx context.Context, id int) (*myapp.User, error) {
-    if id != 100 {
-        t.Fatalf("unexpected id: %d", id)
-    }
-    return &myapp.User{ID: 100, Name: "Susy"}, nil
+	if id != 100 {
+		t.Fatalf("unexpected id: %d", id)
+	}
+	return &myapp.User{ID: 100, Name: "Susy"}, nil
 }
 ```
 
 **Rules:**
+
 - One mock per domain interface, in the `mock` package.
 - Write them by hand — no mock generation tools.
 - The `Invoked` booleans let tests assert that a method was or was not called.
 
----
+______________________________________________________________________
 
 ## Wiring Dependencies
 
@@ -966,41 +1287,42 @@ svc.FindUserByIDFn = func(ctx context.Context, id int) (*myapp.User, error) {
 ```go
 // cmd/myapp/main.go
 func main() {
-    ctx := context.Background()
-    if err := run(ctx, os.Args, os.Getenv, os.Stdin, os.Stdout, os.Stderr); err != nil {
-        fmt.Fprintf(os.Stderr, "%s\n", err)
-        os.Exit(1)
-    }
+	ctx := context.Background()
+	if err := run(ctx, os.Args, os.Getenv, os.Stdin, os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		os.Exit(1)
+	}
 }
 
 // cmd/myapp/run.go
 func run(ctx context.Context, args []string, getenv func(string) string,
-    stdin io.Reader, stdout, stderr io.Writer) error {
+	stdin io.Reader, stdout, stderr io.Writer) error {
 
-    ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
-    defer cancel()
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
+	defer cancel()
 
-    db := &sqlite.DB{DSN: getenv("DATABASE_URL")}
-    if err := db.Open(); err != nil {
-        return err
-    }
-    defer db.Close()
+	db := &sqlite.DB{DSN: getenv("DATABASE_URL")}
+	if err := db.Open(); err != nil {
+		return err
+	}
+	defer db.Close()
 
-    userService := myapp.NewUserCache(&sqlite.UserService{DB: db})
-    dialService := &sqlite.DialService{DB: db}
+	userService := myapp.NewUserCache(&sqlite.UserService{DB: db})
+	dialService := &sqlite.DialService{DB: db}
 
-    srv := http.NewServer(logger, config, userService, dialService)
-    // start httpServer with graceful shutdown
+	srv := http.NewServer(logger, config, userService, dialService)
+	// start httpServer with graceful shutdown
 }
 ```
 
 **Rules:**
+
 - `main` is the only place where concrete implementation packages (`sqlite`, `http`) are imported together.
 - Dependency injection is manual — no framework.
 - `main` is also an adapter: it connects OS environment (env vars, args) to the domain.
 - `main` only calls `run`; `run` does the actual wiring.
 
----
+______________________________________________________________________
 
 ## Test Methodology
 
@@ -1010,23 +1332,24 @@ Always use table-driven tests. Set up the table structure even for a single case
 
 ```go
 cases := map[string]struct{ A, B, Expected int }{
-    "positive":  {1, 1, 2},
-    "negative":  {-1, -2, -3},
-    "mixed":     {1, -1, 0},
-    "both zero": {0, 0, 0},
+	"positive":  {1, 1, 2},
+	"negative":  {-1, -2, -3},
+	"mixed":     {1, -1, 0},
+	"both zero": {0, 0, 0},
 }
 for name, tc := range cases {
-    tc := tc // capture loop variable (required before Go 1.22)
-    t.Run(name, func(t *testing.T) {
-        actual := tc.A + tc.B
-        if actual != tc.Expected {
-            t.Errorf("expected %d, got %d", tc.Expected, actual)
-        }
-    })
+	tc := tc // capture loop variable (required before Go 1.22)
+	t.Run(name, func(t *testing.T) {
+		actual := tc.A + tc.B
+		if actual != tc.Expected {
+			t.Errorf("expected %d, got %d", tc.Expected, actual)
+		}
+	})
 }
 ```
 
 **Rules:**
+
 - Name every case. Never rely on array indices in failure output.
 - Use `t.Run` to wrap each case. `defer` works per-subtest and cases are individually targetable.
 - Capture the loop variable inside the subtest: `tc := tc`.
@@ -1037,12 +1360,12 @@ Store test data in a `test-fixtures/` directory alongside the test file.
 
 ```go
 func TestParseConfig(t *testing.T) {
-    data := filepath.Join("test-fixtures", "valid_config.hcl")
-    f, err := os.Open(data)
-    if err != nil {
-        t.Fatalf("failed to open fixture: %s", err)
-    }
-    defer f.Close()
+	data := filepath.Join("test-fixtures", "valid_config.hcl")
+	f, err := os.Open(data)
+	if err != nil {
+		t.Fatalf("failed to open fixture: %s", err)
+	}
+	defer f.Close()
 }
 ```
 
@@ -1056,27 +1379,27 @@ Use golden files to test complex output (formatted text, serialized structs, gen
 var update = flag.Bool("update", false, "update golden files")
 
 func TestFormat(t *testing.T) {
-    cases := []struct{ Name, Input string }{
-        {"basic", "input.hcl"},
-        {"empty", "empty.hcl"},
-    }
-    for _, tc := range cases {
-        t.Run(tc.Name, func(t *testing.T) {
-            input, _ := os.ReadFile(filepath.Join("test-fixtures", tc.Input))
-            actual := Format(input)
+	cases := []struct{ Name, Input string }{
+		{"basic", "input.hcl"},
+		{"empty", "empty.hcl"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			input, _ := os.ReadFile(filepath.Join("test-fixtures", tc.Input))
+			actual := Format(input)
 
-            golden := filepath.Join("test-fixtures", tc.Name+".golden")
-            if *update {
-                os.WriteFile(golden, actual, 0644)
-            }
+			golden := filepath.Join("test-fixtures", tc.Name+".golden")
+			if *update {
+				os.WriteFile(golden, actual, 0644)
+			}
 
-            expected, _ := os.ReadFile(golden)
-            if !bytes.Equal(actual, expected) {
-                t.Errorf("output mismatch for %s\ngot:\n%s\nwant:\n%s",
-                    tc.Name, actual, expected)
-            }
-        })
-    }
+			expected, _ := os.ReadFile(golden)
+			if !bytes.Equal(actual, expected) {
+				t.Errorf("output mismatch for %s\ngot:\n%s\nwant:\n%s",
+					tc.Name, actual, expected)
+			}
+		})
+	}
 }
 ```
 
@@ -1111,23 +1434,24 @@ When a helper has no meaningful return value, one-line the defer:
 
 ```go
 func testChdir(t *testing.T, dir string) func() {
-    t.Helper()
-    old, err := os.Getwd()
-    if err != nil {
-        t.Fatalf("testChdir: %s", err)
-    }
-    if err := os.Chdir(dir); err != nil {
-        t.Fatalf("testChdir: %s", err)
-    }
-    return func() { os.Chdir(old) }
+	t.Helper()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("testChdir: %s", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("testChdir: %s", err)
+	}
+	return func() { os.Chdir(old) }
 }
 
 func TestThing(t *testing.T) {
-    defer testChdir(t, "/tmp/testdir")()
+	defer testChdir(t, "/tmp/testdir")()
 }
 ```
 
 **Rules:**
+
 - Always call `t.Helper()` at the top of every test helper.
 - Return a `func()` for cleanup; defer it at the call site.
 - Use `t.Fatal` (not `t.Error`) in helpers when execution cannot continue.
@@ -1139,17 +1463,17 @@ Wrap real types with test-specific setup/teardown helpers:
 package sqlite_test
 
 type TestDB struct {
-    *sqlite.DB
+	*sqlite.DB
 }
 
 func MustOpenDB(t *testing.T) *TestDB {
-    t.Helper()
-    db := &sqlite.DB{DSN: ":memory:"}
-    if err := db.Open(); err != nil {
-        t.Fatal(err)
-    }
-    t.Cleanup(func() { db.Close() })
-    return &TestDB{db}
+	t.Helper()
+	db := &sqlite.DB{DSN: ":memory:"}
+	if err := db.Open(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return &TestDB{db}
 }
 ```
 
@@ -1157,24 +1481,24 @@ Test assertion helpers (use instead of verbose `if err != nil` blocks):
 
 ```go
 func assert(t *testing.T, condition bool, msg string) {
-    t.Helper()
-    if !condition {
-        t.Fatal(msg)
-    }
+	t.Helper()
+	if !condition {
+		t.Fatal(msg)
+	}
 }
 
 func ok(t *testing.T, err error) {
-    t.Helper()
-    if err != nil {
-        t.Fatalf("unexpected error: %s", err)
-    }
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
 }
 
 func equals(t *testing.T, exp, act interface{}) {
-    t.Helper()
-    if exp != act {
-        t.Fatalf("expected %v, got %v", exp, act)
-    }
+	t.Helper()
+	if exp != act {
+		t.Fatalf("expected %v, got %v", exp, act)
+	}
 }
 ```
 
@@ -1186,14 +1510,14 @@ Use `select` + `time.After` + `timeMultiplier`. Never use `time.Sleep`.
 var timeMultiplier = time.Duration(1)
 
 func TestAsyncThing(t *testing.T) {
-    done := make(chan struct{})
-    go doAsyncWork(done)
+	done := make(chan struct{})
+	go doAsyncWork(done)
 
-    select {
-    case <-done:
-    case <-time.After(5 * time.Second * timeMultiplier):
-        t.Fatal("timed out waiting for async work")
-    }
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second * timeMultiplier):
+		t.Fatal("timed out waiting for async work")
+	}
 }
 ```
 
@@ -1209,25 +1533,25 @@ The test port is controlled via the `getenv` parameter; the server binds to the 
 
 ```go
 func TestSomethingEndToEnd(t *testing.T) {
-    t.Parallel() // safe because run has no global state
-    ctx, cancel := context.WithCancel(context.Background())
-    t.Cleanup(cancel)
+	t.Parallel() // safe because run has no global state
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 
-    getenv := func(key string) string {
-        switch key {
-        case "PORT":
-            return "18080"
-        case "DATABASE_URL":
-            return "file::memory:?cache=shared"
-        default:
-            return ""
-        }
-    }
-    args := []string{"myapp"}
+	getenv := func(key string) string {
+		switch key {
+		case "PORT":
+			return "18080"
+		case "DATABASE_URL":
+			return "file::memory:?cache=shared"
+		default:
+			return ""
+		}
+	}
+	args := []string{"myapp"}
 
-    go run(ctx, args, getenv, nil, io.Discard, io.Discard)
-    waitForReady(ctx, 5*time.Second, "http://localhost:18080/healthz")
-    // hit the API as a real client would
+	go run(ctx, args, getenv, nil, io.Discard, io.Discard)
+	waitForReady(ctx, 5*time.Second, "http://localhost:18080/healthz")
+	// hit the API as a real client would
 }
 ```
 
@@ -1239,31 +1563,31 @@ Poll `/healthz` before hitting the API. The polling loop also provides a health 
 
 ```go
 func waitForReady(ctx context.Context, timeout time.Duration, endpoint string) error {
-    client := http.Client{}
-    start := time.Now()
-    for {
-        req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-        if err != nil {
-            return fmt.Errorf("failed to create request: %w", err)
-        }
-        resp, err := client.Do(req)
-        if err == nil && resp.StatusCode == http.StatusOK {
-            resp.Body.Close()
-            return nil
-        }
-        if resp != nil {
-            resp.Body.Close()
-        }
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-            if time.Since(start) >= timeout {
-                return fmt.Errorf("timeout waiting for endpoint")
-            }
-            time.Sleep(250 * time.Millisecond)
-        }
-    }
+	client := http.Client{}
+	start := time.Now()
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+		resp, err := client.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			return nil
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			if time.Since(start) >= timeout {
+				return fmt.Errorf("timeout waiting for endpoint")
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
 }
 ```
 
@@ -1274,7 +1598,7 @@ When request/response types are scoped inside a maker func, declare minimal inli
 ```go
 // Only Name matters for this endpoint — the struct says so
 person := struct {
-    Name string `json:"name"`
+	Name string `json:"name"`
 }{Name: "Mat Ryer"}
 ```
 
@@ -1282,14 +1606,14 @@ If you need to verify a response field, declare only that field:
 
 ```go
 var got struct {
-    Greeting string `json:"greeting"`
+	Greeting string `json:"greeting"`
 }
 json.NewDecoder(resp.Body).Decode(&got)
 ```
 
 If you need to validate concurrent behavior in unit tests, use goroutines and `-race` explicitly, run as separate processes rather than via `t.Parallel()`.
 
----
+______________________________________________________________________
 
 ## Writing Testable Code
 
@@ -1308,7 +1632,7 @@ var port = 1000
 const defaultPort = 1000
 
 type ServerOpts struct {
-    Port int // initialize to defaultPort in constructor
+	Port int // initialize to defaultPort in constructor
 }
 ```
 
@@ -1341,15 +1665,15 @@ Always make real network connections in tests. Use OS-assigned ports.
 
 ```go
 func testConn(t *testing.T) (client, server net.Conn) {
-    t.Helper()
-    ln, _ := net.Listen("tcp", "127.0.0.1:0")
-    var srv net.Conn
-    go func() {
-        defer ln.Close()
-        srv, _ = ln.Accept()
-    }()
-    cli, _ := net.Dial("tcp", ln.Addr().String())
-    return cli, srv
+	t.Helper()
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	var srv net.Conn
+	go func() {
+		defer ln.Close()
+		srv, _ = ln.Accept()
+	}()
+	cli, _ := net.Dial("tcp", ln.Addr().String())
+	return cli, srv
 }
 ```
 
@@ -1359,17 +1683,17 @@ Production code with hardcoded behavior (fixed ports, paths, timeouts) is hard t
 
 ```go
 type ServerOpts struct {
-    CachePath string
-    Port      int
-    // unexported test-only field
-    testSkipAuth bool
+	CachePath string
+	Port      int
+	// unexported test-only field
+	testSkipAuth bool
 }
 
 func (s *Server) authenticate(r *http.Request) (User, error) {
-    if s.opts.testSkipAuth {
-        return User{ID: "test-user"}, nil
-    }
-    return s.oauthProvider.Validate(r)
+	if s.opts.testSkipAuth {
+		return User{ID: "test-user"}, nil
+	}
+	return s.oauthProvider.Validate(r)
 }
 ```
 
@@ -1407,17 +1731,17 @@ if got.testString() != want.testString() {
 var testHasGit bool
 
 func init() {
-    if _, err := exec.LookPath("git"); err == nil {
-        testHasGit = true
-    }
+	if _, err := exec.LookPath("git"); err == nil {
+		testHasGit = true
+	}
 }
 
 func TestGitStatus(t *testing.T) {
-    if !testHasGit {
-        t.Log("git not found, skipping")
-        t.Skip()
-    }
-    // use real git binary
+	if !testHasGit {
+		t.Log("git not found, skipping")
+		t.Skip()
+	}
+	// use real git binary
 }
 ```
 
@@ -1425,37 +1749,37 @@ func TestGitStatus(t *testing.T) {
 
 ```go
 func helperProcess(s ...string) *exec.Cmd {
-    cs := []string{"-test.run=TestHelperProcess", "--"}
-    cs = append(cs, s...)
-    env := []string{"GO_WANT_HELPER_PROCESS=1"}
-    cmd := exec.Command(os.Args[0], cs...)
-    cmd.Env = append(env, os.Environ()...)
-    return cmd
+	cs := []string{"-test.run=TestHelperProcess", "--"}
+	cs = append(cs, s...)
+	env := []string{"GO_WANT_HELPER_PROCESS=1"}
+	cmd := exec.Command(os.Args[0], cs...)
+	cmd.Env = append(env, os.Environ()...)
+	return cmd
 }
 
 func TestHelperProcess(*testing.T) {
-    if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
-        return
-    }
-    defer os.Exit(0)
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	defer os.Exit(0)
 
-    args := os.Args
-    for len(args) > 0 {
-        if args[0] == "--" {
-            args = args[1:]
-            break
-        }
-        args = args[1:]
-    }
+	args := os.Args
+	for len(args) > 0 {
+		if args[0] == "--" {
+			args = args[1:]
+			break
+		}
+		args = args[1:]
+	}
 
-    cmd, args := args[0], args[1:]
-    switch cmd {
-    case "status":
-        fmt.Println("nothing to commit")
-    default:
-        fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
-        os.Exit(1)
-    }
+	cmd, args := args[0], args[1:]
+	switch cmd {
+	case "status":
+		fmt.Println("nothing to commit")
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+		os.Exit(1)
+	}
 }
 ```
 
@@ -1481,11 +1805,11 @@ The `mock` package is for application-wide domain interfaces that multiple packa
 
 ```go
 type fakeMailer struct {
-    SendFunc func(to, subject, body string) error
+	SendFunc func(to, subject, body string) error
 }
 
 func (f *fakeMailer) Send(to, subject, body string) error {
-    return f.SendFunc(to, subject, body)
+	return f.SendFunc(to, subject, body)
 }
 ```
 
@@ -1493,12 +1817,12 @@ Use it in the test:
 
 ```go
 mailer := &fakeMailer{
-    SendFunc: func(to, subject, body string) error {
-        if to != "user@example.com" {
-            t.Errorf("unexpected recipient: %s", to)
-        }
-        return nil
-    },
+	SendFunc: func(to, subject, body string) error {
+		if to != "user@example.com" {
+			t.Errorf("unexpected recipient: %s", to)
+		}
+		return nil
+	},
 }
 ```
 
@@ -1513,25 +1837,25 @@ For packages consumed by other packages, export test helpers in a `testing.go` f
 import testing "github.com/mitchellh/go-testing-interface"
 
 func TestConfig(t testing.T) *Config {
-    t.Helper()
-    return &Config{
-        Addr:    "127.0.0.1:0",
-        Timeout: 100 * time.Millisecond,
-    }
+	t.Helper()
+	return &Config{
+		Addr:    "127.0.0.1:0",
+		Timeout: 100 * time.Millisecond,
+	}
 }
 
 func TestConfigInvalid(t testing.T) *Config {
-    t.Helper()
-    return &Config{} // missing required fields
+	t.Helper()
+	return &Config{} // missing required fields
 }
 
 func TestServer(t testing.T) (net.Addr, io.Closer) {
-    t.Helper()
-    srv := newInMemoryServer()
-    if err := srv.Start(); err != nil {
-        t.Fatalf("TestServer: %s", err)
-    }
-    return srv.Addr(), srv
+	t.Helper()
+	srv := newInMemoryServer()
+	if err := srv.Start(); err != nil {
+		t.Fatalf("TestServer: %s", err)
+	}
+	return srv.Addr(), srv
 }
 ```
 
@@ -1547,10 +1871,10 @@ Guard expensive test suites with a flag:
 var flagAcceptance = flag.Bool("acceptance", false, "run acceptance tests")
 
 func TestProvider_basic(t *testing.T) {
-    if !*flagAcceptance {
-        t.Skip("skipping acceptance test; run with -acceptance")
-    }
-    // provision real resources, make real API calls
+	if !*flagAcceptance {
+		t.Skip("skipping acceptance test; run with -acceptance")
+	}
+	// provision real resources, make real API calls
 }
 ```
 
@@ -1585,11 +1909,12 @@ When writing a new test that resembles an existing one, copy and modify. It feel
 
 The rule applies to *test logic*, not to *test infrastructure*. Low-level setup helpers that are universally applicable (`testTempFile`, `testTempDB`, `testConn`, `MustOpenDB`) are good abstractions — they handle error-prone setup that every test in the package needs. What you should not abstract is the sequence of actions and assertions that constitutes the test itself.
 
----
+______________________________________________________________________
 
 ## Unified Checklist
 
 ### Project structure
+
 - [ ] Root package contains domain types, service interfaces, Error type — no external imports
 - [ ] Subpackages named after wrapped dependency (`sqlite`, `http`, `mock`)
 - [ ] Binaries live under `cmd/`; `main.go` and `run.go` in `cmd/myapp/`, not in the `http/` subpackage
@@ -1597,12 +1922,14 @@ The rule applies to *test logic*, not to *test infrastructure*. Low-level setup 
 - [ ] Most important type at top of file; lesser types below
 
 ### Domain layer
+
 - [ ] Domain structs reference only primitive types and other domain types
 - [ ] Service interfaces live alongside the types they operate on
 - [ ] Every interface method documents which error codes it can return
 - [ ] Filter structs use pointer fields; Update structs use pointer fields
 
 ### Error handling
+
 - [ ] Error type in root package with Code, Message, Op, Err fields
 - [ ] Five base error codes: ECONFLICT, EINTERNAL, EINVALID, ENOTFOUND, EUNAUTHORIZED
 - [ ] `ErrorCode()` and `ErrorMessage()` helpers in root package
@@ -1610,16 +1937,19 @@ The rule applies to *test logic*, not to *test infrastructure*. Low-level setup 
 - [ ] `Op` set on every significant function using `"package.Type.Method"` format
 
 ### Authentication
+
 - [ ] `NewContextWithUser()` and `UserIDFromContext()` in root package `context.go`
 - [ ] Authorization enforced inside service implementations, embedded in SQL `WHERE` clauses
 
 ### Program entry point
+
 - [ ] `main` only calls `run`; passes `os.Args`, `os.Getenv`, `os.Stdin`, `os.Stdout`, `os.Stderr`
 - [ ] `run` accepts `(ctx, args, getenv, stdin, stdout, stderr)` — no OS globals
 - [ ] `signal.NotifyContext` and `defer cancel()` inside `run`
 - [ ] `flag.NewFlagSet` inside `run`; global `flag` package never used
 
 ### HTTP layer
+
 - [ ] `NewServer` takes all dependencies as arguments, returns `http.Handler`
 - [ ] Global middleware applied in `NewServer`; per-route middleware in `routes.go`
 - [ ] All routes registered in `routes.go`; explicit `http.NotFoundHandler()` for `/`
@@ -1639,6 +1969,7 @@ The rule applies to *test logic*, not to *test infrastructure*. Low-level setup 
 - [ ] Middleware dependencies closed over in a constructor; not repeated per `mux.Handle` call
 
 ### SQL layer
+
 - [ ] Service methods are thin: begin tx → helpers → commit; `defer tx.Rollback()`
 - [ ] SQL helpers are unexported package-level functions accepting `*Tx`
 - [ ] `defer rows.Close()` after every successful `QueryContext`
@@ -1650,21 +1981,25 @@ The rule applies to *test logic*, not to *test infrastructure*. Low-level setup 
 - [ ] `attachXAssociations` helper called in a loop inside the service method after the primary query
 
 ### CRUD conventions
+
 - [ ] `FindByID` never returns `(nil, nil)`; returns `ENOTFOUND` if missing
 - [ ] `FindMany` returns `([]*T, int, error)`; `int` is total count for pagination
 - [ ] `Create` mutates the input pointer (sets ID, timestamps); nested related objects created in same transaction
 - [ ] `UpdateX` returns the updated object even on error
 
 ### Mock package
+
 - [ ] Hand-written mocks with `Fn` + `Invoked` field pairs per method
 - [ ] No mock generation tools
 
 ### Dependency injection
+
 - [ ] `main` only wires dependencies; no business logic
 - [ ] Caching/layering via wrapper types that implement domain interfaces
 - [ ] No global variables; no dependency injection framework
 
 ### Test methodology
+
 - [ ] Table-driven test structure used, even for single cases
 - [ ] Every table case has a name; no index-based names
 - [ ] `t.Run` used to scope each case; loop variable captured
@@ -1680,6 +2015,7 @@ The rule applies to *test logic*, not to *test infrastructure*. Low-level setup 
 - [ ] Unit tests that duplicate end-to-end assertions are deleted
 
 ### Writing testable code
+
 - [ ] No unoverridable global constants controlling runtime behavior
 - [ ] Configurable defaults: `const defaultX` + `struct { X type }` pattern
 - [ ] Only exported API tested; test files use `_test` package suffix

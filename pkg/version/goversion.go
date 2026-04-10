@@ -55,7 +55,13 @@ func getGitVersion(bi *debug.BuildInfo) string {
 }
 
 func getCommit(bi *debug.BuildInfo) string {
-	return getKey(bi, "vcs.revision")
+	if revision := getKey(bi, "vcs.revision"); revision != "" {
+		return revision
+	}
+	if bi != nil {
+		return bi.Main.Version
+	}
+	return ""
 }
 
 func getDirty(bi *debug.BuildInfo) string {

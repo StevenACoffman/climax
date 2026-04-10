@@ -1,5 +1,5 @@
-// Package root defines the root configuration for the CLI.
-package root
+// Package ROOT_PKG defines the root configuration for the CLI.
+package ROOT_PKG
 
 import (
 	"fmt"
@@ -36,12 +36,12 @@ func New(stdin io.Reader, stdout, stderr io.Writer) *Config {
 	// Subcommands call SetParent(parent.Flags)
 	// which is a no-op here; add shared flags (e.g. BoolVar) to activate.
 	// To add shared flags, uncomment and bind before constructing the command:
-	// cfg.Flags = ff.NewFlagSet("climax")
+	// cfg.Flags = ff.NewFlagSet("APP_NAME")
 	// cfg.Flags.BoolVar(&cfg.MyFlag, 0, "my-flag", "", "description")
 	cfg.Command = &ff.Command{
-		Name:      "climax",
-		Usage:     "climax <SUBCOMMAND> ...",
-		ShortHelp: "a tool for scaffolding Climax-based CLI applications",
-	}
+		Name:      "APP_NAME",
+		Usage:     "APP_NAME <SUBCOMMAND> ...",
+		ShortHelp: "APP_SHORT",
+LONG_HELP_LINE	}
 	return &cfg
 }

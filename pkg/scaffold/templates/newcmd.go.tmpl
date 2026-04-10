@@ -1,0 +1,38 @@
+// Package CMD_NAME implements the "CMD_FF_NAME" CLI command.
+package CMD_NAME
+
+import (
+	"context"
+EXEC_IMPORTS	"github.com/peterbourgon/ff/v4"
+	"APP_IMPORT/cmd/PARENT_PKG"
+)
+
+// Config holds the configuration for the CMD_FF_NAME command.
+type Config struct {
+	*PARENT_PKG.Config
+	Flags   *ff.FlagSet
+	Command *ff.Command
+}
+
+// New creates and registers the CMD_FF_NAME command with the given parent config.
+func New(parent *PARENT_PKG.Config) *Config {
+	var cfg Config
+	cfg.Config = parent
+	cfg.Flags = ff.NewFlagSet("CMD_FF_NAME").SetParent(parent.Flags)
+	// bind flags: cfg.Flags.StringVar(&cfg.SomeFlag, 0, "some-flag", "", "description")
+	cfg.Command = &ff.Command{
+		Name:      "CMD_FF_NAME",
+		Usage:     "APP_NAME CMD_FF_NAME [FLAGS]",
+		ShortHelp: "CMD_SHORT",
+		LongHelp:  "CMD_LONG",
+		Flags:     cfg.Flags,
+		Exec:      cfg.exec,
+	}
+	parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
+	return &cfg
+}
+
+func (cfg *Config) exec(_ context.Context, _ []string) error {
+	// TODO: implement CMD_FF_NAME.
+	// Rename the second parameter from _ to args to access positional arguments.
+EXEC_BODY}

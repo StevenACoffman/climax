@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/peterbourgon/ff/v4"
+
 	"github.com/StevenACoffman/climax/cmd/root"
 	"github.com/StevenACoffman/climax/pkg/gomod"
 	"github.com/StevenACoffman/climax/pkg/scaffold"
@@ -29,10 +30,34 @@ func New(parent *root.Config) *Config {
 	var cfg Config
 	cfg.Config = parent
 	cfg.Flags = ff.NewFlagSet("init").SetParent(parent.Flags)
-	cfg.Flags.StringVar(&cfg.Name, 0, "name", "", "CLI name for the root ff.Command (default: last import path segment; allows hyphens)")
-	cfg.Flags.StringVar(&cfg.Short, 0, "short", "", `ShortHelp for the root command (default: "TODO: describe <name> here")`)
-	cfg.Flags.StringVar(&cfg.Long, 0, "long", "", "LongHelp for the root command (omitted if not set)")
-	cfg.Flags.StringVar(&cfg.RootPkg, 0, "root-pkg", "", `Go package name for the root config package (default: "root")`)
+	cfg.Flags.StringVar(
+		&cfg.Name,
+		0,
+		"name",
+		"",
+		"CLI name for the root ff.Command (default: last import path segment; allows hyphens)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.Short,
+		0,
+		"short",
+		"",
+		`ShortHelp for the root command (default: "TODO: describe <name> here")`,
+	)
+	cfg.Flags.StringVar(
+		&cfg.Long,
+		0,
+		"long",
+		"",
+		"LongHelp for the root command (omitted if not set)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.RootPkg,
+		0,
+		"root-pkg",
+		"",
+		`Go package name for the root config package (default: "root")`,
+	)
 	cfg.Flags.BoolVar(&cfg.NoVersion, 0, "no-version", "skip generating cmd/version/version.go")
 	cfg.Command = &ff.Command{
 		Name:      "init",
@@ -89,11 +114,15 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 		NoVersion:    cfg.NoVersion,
 	}
 
-	if err := scaffold.InitApp(absPath, opts); err != nil {
+	written, err := scaffold.InitApp(absPath, opts)
+	if err != nil {
 		return fmt.Errorf("init: %w", err)
 	}
 
 	_, _ = fmt.Fprintf(cfg.Stdout, "initialized climax app at %s (import: %s)\n",
 		absPath, importPrefix)
+	for _, f := range written {
+		_, _ = fmt.Fprintf(cfg.Stdout, "  created %s\n", f)
+	}
 	return nil
 }

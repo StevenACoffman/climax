@@ -3,10 +3,12 @@ package add
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
 	"github.com/peterbourgon/ff/v4"
+
 	"github.com/StevenACoffman/climax/cmd/root"
 	"github.com/StevenACoffman/climax/pkg/gomod"
 	"github.com/StevenACoffman/climax/pkg/scaffold"
@@ -18,6 +20,7 @@ type Config struct {
 	Name    string
 	Short   string
 	Long    string
+	Parent  string
 	Flags   *ff.FlagSet
 	Command *ff.Command
 }
@@ -27,9 +30,34 @@ func New(parent *root.Config) *Config {
 	var cfg Config
 	cfg.Config = parent
 	cfg.Flags = ff.NewFlagSet("add").SetParent(parent.Flags)
-	cfg.Flags.StringVar(&cfg.Name, 0, "name", "", "ff.Command.Name for the generated command (default: same as <name>; allows hyphens)")
-	cfg.Flags.StringVar(&cfg.Short, 0, "short", "", `ShortHelp for the generated command (default: "<name> command")`)
-	cfg.Flags.StringVar(&cfg.Long, 0, "long", "", `LongHelp for the generated command (default: "<Name> is a new command.")`)
+	cfg.Flags.StringVar(
+		&cfg.Name,
+		0,
+		"name",
+		"",
+		"ff.Command.Name for the generated command (default: same as <name>; allows hyphens)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.Short,
+		0,
+		"short",
+		"",
+		`ShortHelp for the generated command (default: "<name> command")`,
+	)
+	cfg.Flags.StringVar(
+		&cfg.Long,
+		0,
+		"long",
+		"",
+		`LongHelp for the generated command (default: "<Name> is a new command.")`,
+	)
+	cfg.Flags.StringVar(
+		&cfg.Parent,
+		'p',
+		"parent",
+		"",
+		"Go package name of the parent command (default: root)",
+	)
 	cfg.Command = &ff.Command{
 		Name:      "add",
 		Usage:     "climax add [FLAGS] <name> [path]",
@@ -48,7 +76,7 @@ func New(parent *root.Config) *Config {
 
 func (cfg *Config) exec(_ context.Context, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("add: command name required (usage: climax add [FLAGS] <name> [path])")
+		return errors.New("add: command name required (usage: climax add [FLAGS] <name> [path])")
 	}
 	name := args[0]
 
@@ -60,6 +88,12 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 	if cfg.Name != "" {
 		if err := scaffold.ValidateCliName(cfg.Name); err != nil {
 			return fmt.Errorf("add: --name: %w", err)
+		}
+	}
+
+	if cfg.Parent != "" {
+		if err := scaffold.ValidateIdent(cfg.Parent); err != nil {
+			return fmt.Errorf("add: --parent: %w", err)
 		}
 	}
 
@@ -83,15 +117,19 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 	}
 
 	opts := scaffold.AddOptions{
-		Name:  cfg.Name,
-		Short: cfg.Short,
-		Long:  cfg.Long,
+		Name:   cfg.Name,
+		Short:  cfg.Short,
+		Long:   cfg.Long,
+		Parent: cfg.Parent,
 	}
 
-	if err := scaffold.AddCommand(absPath, name, importPrefix, opts); err != nil {
+	created, modified, err := scaffold.AddCommand(absPath, name, importPrefix, opts)
+	if err != nil {
 		return fmt.Errorf("add: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(cfg.Stdout, "added command %q to %s\n", name, absPath)
+	_, _ = fmt.Fprintf(cfg.Stdout, "added command %q\n", name)
+	_, _ = fmt.Fprintf(cfg.Stdout, "  created  %s\n", created)
+	_, _ = fmt.Fprintf(cfg.Stdout, "  modified %s\n", modified)
 	return nil
 }

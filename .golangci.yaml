@@ -135,7 +135,7 @@ linters:
     wrapcheck:
       extra-ignore-sigs:
         - .Errorf(
-        - errors.New(
+        - fmt.Errorf(
 
     # ── depguard ─────────────────────────────────────────────────────────────
     # spec.md: climax uses its own command pattern; no third-party CLI frameworks.
