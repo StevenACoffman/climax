@@ -2,7 +2,7 @@
 
 A scaffold generator for Go CLI applications built with [`peterbourgon/ff/v4`](https://github.com/peterbourgon/ff).
 
-Climax generates the boilerplate for a structured, idiomatic CLI: one package per command, a shared root `Config` that threads `stdin`/`stdout`/`stderr` through the whole tree, signal-safe shutdown, and a dispatcher that routes arguments to the matching command. New commands can be added at any time — climax uses AST analysis to register them correctly even if you've edited the generated files or renamed the dispatcher.
+Climax generates the boilerplate for a structured, idiomatic CLI: one package per command, flags-first configuration (every setting is a registered `ff` flag, discoverable via `-h`), a shared root `Config` that threads `stdin`/`stdout`/`stderr` through the whole tree, signal-safe shutdown, and a dispatcher that routes arguments to the matching command. New commands can be added at any time — climax uses AST analysis to register them correctly even if you've edited the generated files or renamed the dispatcher.
 
 ## Install
 
@@ -206,6 +206,32 @@ go run . help config create
 ```
 
 ## Generated patterns
+
+### Flags-first configuration
+
+Every knob that affects behaviour is a registered flag on an `ff.FlagSet`. This means running any command (or subcommand) with `-h` reveals its complete configuration surface area — nothing is hidden behind hard-coded values or environment variables that aren't also flags.
+
+`ff` knows how to parse each flag from three sources, highest precedence first:
+
+1. CLI args (`--port 8080`)
+2. Environment variables — `ff` uppercases the prefix and replaces hyphens and dots in flag names with underscores, so `--log-level` with prefix `MYAPP` becomes `MYAPP_LOG_LEVEL`
+3. Config files (TOML, JSON, INI, or `.env` format)
+
+Because the flag is the single source of truth for each setting, you get all three sources for free without extra code:
+
+```go
+// cmd/serve/serve.go — in New()
+cfg.Flags.IntVar(&cfg.Port, 0, "port", 8080, "port to listen on")
+```
+
+```sh
+# All three lines set the same flag:
+myapp serve --port 9090
+MYAPP_PORT=9090 myapp serve
+# serve.toml: port = 9090
+```
+
+See the [peterbourgon/ff](https://github.com/peterbourgon/ff) documentation for details on config file formats, env var prefix configuration, and full precedence rules.
 
 ### Signal-safe shutdown
 

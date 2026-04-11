@@ -30,9 +30,10 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not call `Parse`, `Run`, or any other method on `ff.Command` from command packages. Those are called by the dispatcher in `cmd/cmd.go`.
 - Do not register commands in `init()` or globals. Call `New()` in `cmd/cmd.go` only.
 - Do not bind flag values inside `exec`. Bind them in `New()` — they are already parsed before `exec` is called.
-- Do not call `os.Exit` inside a command. Return errors; only `main` controls exit codes.
+- Do not call `os.Exit` inside a command. Return errors or `root.ExitError`; only `run()` in `main.go` controls exit codes.
 - Do not use `os.Stdout` / `os.Stderr` directly. Write to `cfg.Stdout` / `cfg.Stderr` (from `root.Config`).
-- Do not treat `ff.ErrHelp` or `ff.ErrNoExec` as failures. Handle both as success in `main`.
+- Do not treat `ff.ErrHelp` or `ff.ErrNoExec` as failures. Handle both as success in `run()`.
+- Do not hide behaviour behind hard-coded values or `os.Getenv` calls. Every configurable knob must be a registered flag on an `ff.FlagSet` — running any command with `-h` must reveal its complete configuration surface.
 - Error strings: lowercase, no trailing punctuation, format `<command>: <reason>`.
 
 **HTTP**
@@ -505,18 +506,20 @@ import (
 	"github.com/peterbourgon/ff/v4"
 )
 
-// Config holds shared I/O writers and the root ff.Command.
+// Config holds shared I/O streams and the root ff.Command.
 // All subcommand configs embed *Config to inherit these.
 type Config struct {
+	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
 	Flags   *ff.FlagSet
 	Command *ff.Command
 }
 
-// New returns a new root Config with the given I/O writers.
-func New(stdout, stderr io.Writer) *Config {
+// New returns a new root Config with the given I/O streams.
+func New(stdin io.Reader, stdout, stderr io.Writer) *Config {
 	var cfg Config
+	cfg.Stdin = stdin
 	cfg.Stdout = stdout
 	cfg.Stderr = stderr
 	// No shared flags — cfg.Flags is nil; ff provides --help automatically.
@@ -592,7 +595,7 @@ func (cfg *Config) exec(_ context.Context, _ []string) error {
 - `exec` reads already-parsed flag values. Never call `Parse` or `fs.Parse` inside `exec`.
 - `SetParent(parent.Flags)` must be called on every subcommand flag set so that parent flags (e.g. `--verbose`) are accepted at any level.
 - Write to `cfg.Stdout` / `cfg.Stderr`. Never use `os.Stdout` / `os.Stderr` directly.
-- Return `error`. Do not call `os.Exit` inside a command.
+- Return `error`. Do not call `os.Exit` inside a command; use `root.ExitError` for controlled non-zero exits.
 - Error strings: lowercase, no trailing punctuation, format `<command>: <reason>`.
 
 ### Registering Commands
@@ -621,8 +624,8 @@ import (
 
 // Run parses args and dispatches to the matching command.
 // args must not include the executable name (pass os.Args[1:]).
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	r := root.New(stdout, stderr)
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	r := root.New(stdin, stdout, stderr)
 	version.New(r)
 	// register new commands here
 
@@ -632,7 +635,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	if err := r.Command.Run(ctx); err != nil {
-		if !errors.Is(err, ff.ErrNoExec) {
+		// Suppress help output for ErrNoExec and ExitError — both are intentional.
+		var exitErr root.ExitError
+		if !errors.Is(err, ff.ErrNoExec) && !errors.As(err, &exitErr) {
 			fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
 		}
 		return err
@@ -646,9 +651,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 - `Run` receives `os.Args[1:]` — executable name already removed by `main`.
 - Subcommand selection is case-insensitive match on `Name`. No prefix matching, no fuzzy matching.
-- `-h` / `--help` at any level causes `Parse` to return `ff.ErrHelp`; `main` treats this as success.
-- A command with no `Exec` causes `Run` to return `ff.ErrNoExec`; `main` treats this as success.
-- Unknown subcommand returns an error; `main` owns the exit code.
+- `-h` / `--help` at any level causes `Parse` to return `ff.ErrHelp`; `run()` treats this as success.
+- A command with no `Exec` causes `Run` to return `ff.ErrNoExec`; `run()` treats this as success.
+- Unknown subcommand returns an error; `run()` in `main.go` owns the exit code.
 
 ### Post-Parse Initialization
 
@@ -666,10 +671,27 @@ r.Client = client // now available to all exec functions via embedded root.Confi
 if err := r.Command.Run(ctx); err != nil { ... }
 ```
 
-### Entry Point (CLI)
+### ExitError
+
+`root.ExitError` lets a command exit with a specific non-zero code without printing an `error: ...` line. Return it from `exec`; `run()` in `main.go` handles it via `errors.As`:
 
 ```go
-// Package main is the entry point for the CLI.
+// In any command's exec function:
+if !ok {
+    return root.ExitError(1) // exits 1; no "error:" printed
+}
+```
+
+The dispatcher suppresses help output for `ExitError`, and `run()` calls `os.Exit` with the code directly.
+
+### Entry Point (CLI)
+
+`main.go` is intentionally thin. It sets up signal-safe shutdown via `signal.NotifyContext` and delegates to a separate `run()` function. The `defer stop()` must live in `main`, not in `run`, because `run()` calls `os.Exit` and deferred calls inside `run` would never execute.
+
+`ff.ErrHelp` and `ff.ErrNoExec` are not failures. `root.ExitError` bypasses the `"error: ..."` printer and calls `os.Exit` directly.
+
+```go
+// main.go
 package main
 
 import (
@@ -677,9 +699,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"<org>/<repo>/cmd"
 	"github.com/peterbourgon/ff/v4"
+	"<org>/<repo>/cmd"
+	"<org>/<repo>/cmd/root"
 )
 
 const (
@@ -688,11 +713,26 @@ const (
 )
 
 func main() {
-	ctx := context.Background()
-	err := cmd.Run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	// defer stop *must* be here in main *not* run (a different function)
+	// to guarantee the deferred stop is called. Please preserve this comment.
+	ctx, stop := signal.NotifyContext(context.Background(),
+		os.Interrupt,    // SIGINT = Ctrl+C
+		syscall.SIGQUIT, // Ctrl-\
+		syscall.SIGTERM, // polite termination request
+	)
+	defer stop()
+	run(ctx)
+}
+
+// run is intentionally separated from main to improve testability.
+func run(ctx context.Context) {
+	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	var exitErr root.ExitError
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
 		os.Exit(exitSuccess)
+	case errors.As(err, &exitErr):
+		os.Exit(int(exitErr))
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
 		os.Exit(exitFail)
@@ -704,6 +744,7 @@ func main() {
 
 | Rule                                        | Rationale                                                                     |
 | ------------------------------------------- | ----------------------------------------------------------------------------- |
+| Every configurable knob is a registered flag | Hard-coded values and out-of-band `os.Getenv` calls silently break `-h` discoverability and make the configuration surface invisible to operators |
 | Use `ff`; no other CLI frameworks           | `ff` provides flags, subcommand dispatch, and help with minimal surface area  |
 | No Commander interface                      | Go composition via `Exec` function pointer is sufficient                      |
 | No `init()` for registration                | `New()` calls in `cmd.go` are explicit and easy to trace                      |
@@ -711,8 +752,9 @@ func main() {
 | Flag values bound in `New()`, not in `exec` | Flags are parsed before `exec` is called; binding in `exec` is too late       |
 | `SetParent` on every subcommand flag set    | Allows parent flags (e.g. `--verbose`) to be accepted at any subcommand level |
 | Never use `os.Stdout`/`os.Stderr` directly  | Write to `cfg.Stdout`/`cfg.Stderr` for testability                            |
-| Errors bubble to `main`                     | Commands don't call `os.Exit`; only `main` controls exit codes                |
-| `ff.ErrHelp` and `ff.ErrNoExec` are success | Handle both in `main`'s switch; do not propagate as failures                  |
+| Return `root.ExitError`, not `os.Exit`      | Commands don't control the process; only `run()` in `main.go` calls `os.Exit` |
+| Errors bubble to `run()`                    | `run()` is the single place that maps errors to exit codes                    |
+| `ff.ErrHelp` and `ff.ErrNoExec` are success | Handle both in `run()`'s switch; do not propagate as failures                 |
 
 ### Checklist: Adding a New Command
 
@@ -721,6 +763,7 @@ func main() {
 - [ ] Write `New(parent *root.Config) *Config` that:
   - creates `ff.NewFlagSet("<name>").SetParent(parent.Flags)`
   - binds flag values to `Config` fields
+  - exposes every configurable behaviour as a flag (no `os.Getenv`, no hard-coded values)
   - constructs `ff.Command` with `Name`, `Usage`, `ShortHelp`, `Flags`, and `Exec`
   - appends to `parent.Command.Subcommands`
 - [ ] Write `func (cfg *Config) exec(ctx context.Context, args []string) error`

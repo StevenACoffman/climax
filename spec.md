@@ -9,6 +9,14 @@ Use the `ff.Command` struct with the Config struct pattern described below.
 
 Note: Replace `<org>/<repo>` below with the Go module path from `go.mod`.
 
+**Flags-first configuration is a core requirement.** Every knob that affects
+behaviour must be a registered flag on an `ff.FlagSet`. `ff` then knows how to
+parse that value from CLI args, environment variables, and config files, and how
+to describe it in `-h` output. The invariant to preserve: running any command
+with `-h` (at any depth) must reveal the complete configuration surface area of
+that command. Never hide behaviour behind hard-coded values, package-level
+variables, or any mechanism that bypasses the flag set.
+
 ______________________________________________________________________
 
 ## Directory Structure
@@ -177,6 +185,7 @@ func (cfg *Config) exec(_ context.Context, _ []string) error {
 - `New` and `Config` are the only exported identifiers in the package (commands that need a user-visible package-level variable, such as `Version string`, may export it too).
 - `New` appends to `parent.Command.Subcommands` — no other registration needed.
 - Flag values are bound to `Config` fields in `New()`, not inside `exec`.
+- Every behavioural knob must be a registered flag on `cfg.Flags`. Never use hard-coded values, package-level variables, or `os.Getenv` calls outside the flag set — they make settings invisible to `-h`.
 - `SetParent(parent.Flags)` must be called on every subcommand flag set so that parent flags are accepted at any depth.
 - Write to `cfg.Stdout` / `cfg.Stderr`. Never use `os.Stdout` / `os.Stderr` directly.
 - Return `error`. Do not call `os.Exit` inside a command; use `root.ExitError` instead.
@@ -606,6 +615,7 @@ ______________________________________________________________________
 
 | Rule | Rationale |
 |---|---|
+| Every configurable knob is a registered flag | Hard-coded values and out-of-band `os.Getenv` calls silently break `-h` discoverability and make the configuration surface invisible to operators |
 | Use `ff`; no other CLI frameworks | `ff` provides flags, subcommand dispatch, and help with minimal surface area |
 | No `Commander` interface | Go composition via `Exec` function pointer is sufficient |
 | No `init()` for registration | `New()` calls in `cmd.go` are explicit and easy to trace |
@@ -626,6 +636,7 @@ ______________________________________________________________________
 - [ ] Write `New(parent *root.Config) *Config` that:
   - creates `ff.NewFlagSet("<name>").SetParent(parent.Flags)`
   - binds flag values to `Config` fields
+  - exposes every configurable behaviour as a flag (no `os.Getenv`, no hard-coded values)
   - constructs `ff.Command` with `Name`, `Usage`, `ShortHelp`, `Flags`, and `Exec`
   - appends to `parent.Command.Subcommands`
 - [ ] Write `func (cfg *Config) exec(ctx context.Context, args []string) error`
