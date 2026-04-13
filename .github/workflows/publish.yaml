@@ -2,7 +2,6 @@ name: Build and Publish
 
 permissions:
   contents: write # for release
-  packages: write
 
 on:
   workflow_dispatch:
@@ -20,7 +19,23 @@ on:
 jobs:
   backend-tests:
     name: "Go Build/Test"
-    uses: ./.github/workflows/partial-tests.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+          check-latest: true
+          cache-dependency-path: "**/*.sum"
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
 
   tag:
     name: "Publish Tag"
@@ -29,20 +44,14 @@ jobs:
       - backend-tests
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions-ecosystem/action-get-latest-tag@v1
-        id: get-latest-tag
-
-      - uses: actions-ecosystem/action-bump-semver@v1
-        id: bump-semver
         with:
-          current_version: ${{ steps.get-latest-tag.outputs.tag }}
-          level: ${{ inputs.semverbump }}
+          fetch-depth: 0
 
-      - uses: actions-ecosystem/action-push-tag@v1
+      - uses: mathieudutour/github-tag-action@v6.2
         with:
-          tag: ${{ steps.bump-semver.outputs.new_version }}
-          message: "${{ steps.bump-semver.outputs.new_version }}"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: ${{ inputs.semverbump }}
+          tag_prefix: "v"
 
   goreleaser:
     name: "Release"
@@ -59,12 +68,7 @@ jobs:
         with:
           go-version-file: "go.mod"
           cache: true
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: latest

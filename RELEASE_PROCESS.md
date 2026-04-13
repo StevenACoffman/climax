@@ -5,7 +5,7 @@ Releases are published to GitHub using [GoReleaser](https://goreleaser.com). The
 ## What GoReleaser does
 
 - Runs `go mod tidy` and `go generate ./...` before building
-- Builds binaries for Linux, macOS, and Windows on `amd64`, `arm64`, and `386`
+- Builds binaries for Linux, macOS, and Windows on `amd64` and `arm64`
 - Packages binaries as `.tar.gz` (`.zip` on Windows)
 - Generates a changelog from commits since the previous tag (excluding `docs:` and `test:` prefixes)
 - Creates a GitHub release and uploads all artifacts
@@ -66,18 +66,18 @@ Artifacts are written to `dist/`.
 
 ## Publishing Python wheels to PyPI
 
-After a GitHub release exists, the pre-built binaries attached to it can be repackaged as Python wheels and published to PyPI using [buildwheels](https://github.com/neo4j-labs/buildwheels).
+After a GitHub release exists, the pre-built binaries attached to it can be repackaged as Python wheels and published to PyPI using gowheels.
 
-### Install buildwheels
+### Install gowheels
 
 ```sh
-go install github.com/neo4j-labs/buildwheels@latest
+go install github.com/StevenACoffman/gowheels@latest
 ```
 
 ### Build wheels locally (no upload)
 
 ```sh
-buildwheels -repo StevenACoffman/climax
+gowheels pypi --name climax --repo StevenACoffman/climax
 ```
 
 Wheels are written to `./dist/`. Inspect them before uploading.
@@ -88,28 +88,28 @@ Wheels are written to `./dist/`. Inspect them before uploading.
 export GITHUB_TOKEN=<your-token>   # avoids GitHub API rate limits
 export PYPI_TOKEN=<your-pypi-token>
 
-buildwheels -repo StevenACoffman/climax -upload true
+gowheels pypi --name climax --repo StevenACoffman/climax --upload
 ```
 
-`buildwheels` fetches the release assets from GitHub, extracts the binary from each archive, wraps it in a platform-specific wheel, and uploads each wheel to PyPI.
+`gowheels pypi` fetches the release assets from GitHub, extracts the binary from each archive, wraps it in a platform-specific wheel, and uploads each wheel to PyPI.
 
 To target a specific release tag rather than the latest:
 
 ```sh
-buildwheels -repo StevenACoffman/climax -version v0.1.0 -upload true
+gowheels pypi --name climax --repo StevenACoffman/climax --version v0.1.0 --upload
 ```
 
 ---
 
 ## Appendix: Automated PyPI publishing via GitHub Actions
 
-`.github/workflows/postrelease.yaml` runs automatically whenever a GitHub release is published. It uses `buildwheels` to build the wheels and [pypa/gh-action-pypi-publish](https://github.com/pypa/gh-action-pypi-publish) to upload them via OIDC — no `PYPI_TOKEN` secret is required.
+`.github/workflows/postrelease.yaml` runs automatically whenever a GitHub release is published. It uses `gowheels pypi --upload` to build the wheels and publish them to PyPI via OIDC in a single step — no `PYPI_TOKEN` secret is required.
 
 ### One-time setup: PyPI trusted publishing
 
 1. **Create a PyPI account** at <https://pypi.org> if you do not already have one.
 
-2. **Register the project** by publishing the first release manually (see the `buildwheels` steps above), or by creating the project name on PyPI before the first automated run.
+2. **Register the project** by publishing the first release manually (see the `gowheels pypi` steps above), or by creating the project name on PyPI before the first automated run.
 
 3. **Add a trusted publisher** on PyPI:
    - Go to your project page on PyPI → **Manage** → **Publishing**.
