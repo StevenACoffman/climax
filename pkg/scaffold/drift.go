@@ -21,7 +21,7 @@ import (
 // DriftItem describes a single structural difference between a climax source
 // file and the corresponding scaffold template.
 type DriftItem struct {
-	Template   string // "main", "cmd", or "root"
+	Template   string // "main", "cmd", "root", "version", or "man"
 	Property   string // human-readable property name
 	InSource   string // "present" or "absent"
 	InTemplate string // "present" or "absent"
@@ -37,16 +37,46 @@ type templatePatch struct {
 
 type replacePair struct{ old, new string }
 
+// templateSet holds the template strings used for drift comparisons.
+// Separating this from the embedded variables allows tests to inject
+// modified templates without touching the filesystem.
+type templateSet struct {
+	main    string
+	cmd     string
+	root    string
+	version string
+	man     string
+}
+
 // sourceInfo caches all structural properties extracted from the real source.
 type sourceInfo struct {
-	mainHasSignal     bool
-	mainHasRunFunc    bool
-	mainPassesStdin   bool
-	cmdHasStdinParam  bool
-	cmdPassesStdin    bool
+	// main.go properties
+	mainHasSignal   bool
+	mainHasRunFunc  bool
+	mainPassesStdin bool
+	// cmd/cmd.go properties
+	cmdHasStdinParam bool
+	cmdPassesStdin   bool
+	// cmd/root/root.go properties
 	rootHasStdinField bool
 	rootHasStdinParam bool
 	rootAssignsStdin  bool
+	// cmd/version/version.go properties
+	versionHasJSONFlag  bool
+	versionHasTabwriter bool
+	// cmd/mango/mango.go → man.go.tmpl properties
+	mangoHasSectionField bool
+}
+
+// defaultTemplates returns the embedded scaffold templates.
+func defaultTemplates() templateSet {
+	return templateSet{
+		main:    mainTemplate,
+		cmd:     cmdTemplate,
+		root:    rootTemplate,
+		version: versionTemplate,
+		man:     manCmdTemplate,
+	}
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -72,18 +102,37 @@ func DetectDrift(climaxDir string) ([]DriftItem, error) {
 		return nil, fmt.Errorf("parsing cmd/root/root.go: %w", err)
 	}
 
-	src := sourceInfo{
-		mainHasSignal:     astHasCall(main, "main", "NotifyContext"),
-		mainHasRunFunc:    astHasFuncDecl(main, "run"),
-		mainPassesStdin:   astCallPassesIdent(main, "run", "cmd", "Run", "Stdin"),
-		cmdHasStdinParam:  astFuncHasIOReaderParam(cmdFile, "Run"),
-		cmdPassesStdin:    astCallPassesIdent(cmdFile, "Run", "root", "New", "stdin"),
-		rootHasStdinField: astStructHasField(rootFile, "Config", "Stdin"),
-		rootHasStdinParam: astFuncHasIOReaderParam(rootFile, "New"),
-		rootAssignsStdin:  astFuncAssignsField(rootFile, "New", "Stdin"),
+	versionPath := filepath.Join(climaxDir, "cmd", "version", "version.go")
+	versionFile, err := parseFile(versionPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing cmd/version/version.go: %w", err)
+	}
+	versionSrc, err := os.ReadFile(versionPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading cmd/version/version.go: %w", err)
 	}
 
-	return runChecks(src), nil
+	mangoFile, err := parseFile(filepath.Join(climaxDir, "cmd", "mango", "mango.go"))
+	if err != nil {
+		return nil, fmt.Errorf("parsing cmd/mango/mango.go: %w", err)
+	}
+
+	src := sourceInfo{
+		mainHasSignal:        astHasCall(main, "main", "NotifyContext"),
+		mainHasRunFunc:       astHasFuncDecl(main, "run"),
+		mainPassesStdin:      astCallPassesIdent(main, "run", "cmd", "Run", "Stdin"),
+		cmdHasStdinParam:     astFuncHasIOReaderParam(cmdFile, "Run"),
+		cmdPassesStdin:       astCallPassesIdent(cmdFile, "Run", "root", "New", "stdin"),
+		rootHasStdinField:    astStructHasField(rootFile, "Config", "Stdin"),
+		rootHasStdinParam:    astFuncHasIOReaderParam(rootFile, "New"),
+		rootAssignsStdin:     astFuncAssignsField(rootFile, "New", "Stdin"),
+		versionHasJSONFlag:   astStructHasField(versionFile, "Config", "JSON"),
+		versionHasTabwriter:  strings.Contains(string(versionSrc), "tabwriter.NewWriter"),
+		mangoHasSectionField: astStructHasField(mangoFile, "Config", "Section"),
+	}
+
+	tmpl := defaultTemplates()
+	return runChecks(src, &tmpl), nil
 }
 
 // ApplyFixes patches the template files inside climaxDir for every DriftItem
@@ -132,7 +181,7 @@ func ApplyFixes(climaxDir string, items []DriftItem) error {
 
 // ─── Checks ──────────────────────────────────────────────────────────────────
 
-func runChecks(src sourceInfo) []DriftItem {
+func runChecks(src sourceInfo, tmpl *templateSet) []DriftItem {
 	type check struct {
 		tmpl   string
 		prop   string
@@ -146,7 +195,7 @@ func runChecks(src sourceInfo) []DriftItem {
 			tmpl:   "main",
 			prop:   "signal.NotifyContext",
 			inSrc:  src.mainHasSignal,
-			inTmpl: strings.Contains(mainTemplate, "signal.NotifyContext"),
+			inTmpl: strings.Contains(tmpl.main, "signal.NotifyContext"),
 			patch: &templatePatch{
 				templateFile: "main.go.tmpl",
 				replacements: []replacePair{
@@ -202,19 +251,19 @@ func run(ctx context.Context) int {
 			tmpl:   "main",
 			prop:   "run() separation",
 			inSrc:  src.mainHasRunFunc,
-			inTmpl: strings.Contains(mainTemplate, "func run("),
+			inTmpl: strings.Contains(tmpl.main, "func run("),
 		},
 		{
 			tmpl:   "main",
 			prop:   "os.Stdin passed to cmd.Run",
 			inSrc:  src.mainPassesStdin,
-			inTmpl: strings.Contains(mainTemplate, "os.Stdin"),
+			inTmpl: strings.Contains(tmpl.main, "os.Stdin"),
 		},
 		{
 			tmpl:   "cmd",
 			prop:   "stdin io.Reader parameter in Run",
 			inSrc:  src.cmdHasStdinParam,
-			inTmpl: strings.Contains(cmdTemplate, "stdin io.Reader"),
+			inTmpl: strings.Contains(tmpl.cmd, "stdin io.Reader"),
 			patch: &templatePatch{
 				templateFile: "cmd.go.tmpl",
 				replacements: []replacePair{
@@ -229,7 +278,7 @@ func run(ctx context.Context) int {
 			tmpl:   "cmd",
 			prop:   "stdin forwarded to root.New",
 			inSrc:  src.cmdPassesStdin,
-			inTmpl: strings.Contains(cmdTemplate, "ROOT_PKG.New(stdin,"),
+			inTmpl: strings.Contains(tmpl.cmd, "ROOT_PKG.New(stdin,"),
 			patch: &templatePatch{
 				templateFile: "cmd.go.tmpl",
 				replacements: []replacePair{
@@ -244,7 +293,7 @@ func run(ctx context.Context) int {
 			tmpl:   "root",
 			prop:   "Stdin io.Reader field in Config",
 			inSrc:  src.rootHasStdinField,
-			inTmpl: strings.Contains(rootTemplate, "Stdin   io.Reader"),
+			inTmpl: strings.Contains(tmpl.root, "Stdin   io.Reader"),
 			patch: &templatePatch{
 				templateFile: "root.go.tmpl",
 				replacements: []replacePair{
@@ -259,7 +308,7 @@ func run(ctx context.Context) int {
 			tmpl:   "root",
 			prop:   "stdin io.Reader parameter in New",
 			inSrc:  src.rootHasStdinParam,
-			inTmpl: strings.Contains(rootTemplate, "func New(stdin io.Reader,"),
+			inTmpl: strings.Contains(tmpl.root, "func New(stdin io.Reader,"),
 			patch: &templatePatch{
 				templateFile: "root.go.tmpl",
 				replacements: []replacePair{
@@ -274,13 +323,49 @@ func run(ctx context.Context) int {
 			tmpl:   "root",
 			prop:   "cfg.Stdin = stdin assignment",
 			inSrc:  src.rootAssignsStdin,
-			inTmpl: strings.Contains(rootTemplate, "cfg.Stdin = stdin"),
+			inTmpl: strings.Contains(tmpl.root, "cfg.Stdin = stdin"),
 			patch: &templatePatch{
 				templateFile: "root.go.tmpl",
 				replacements: []replacePair{
 					{
 						"cfg.Stdout = stdout",
 						"cfg.Stdin = stdin\n\tcfg.Stdout = stdout",
+					},
+				},
+			},
+		},
+		{
+			tmpl:   "version",
+			prop:   "JSON flag in Config",
+			inSrc:  src.versionHasJSONFlag,
+			inTmpl: strings.Contains(tmpl.version, "\tJSON    bool\n"),
+			patch: &templatePatch{
+				templateFile: "version.go.tmpl",
+				replacements: []replacePair{
+					{
+						"\t*ROOT_PKG.Config\n\tFlags   *ff.FlagSet",
+						"\t*ROOT_PKG.Config\n\tJSON    bool\n\tFlags   *ff.FlagSet",
+					},
+				},
+			},
+		},
+		{
+			tmpl:   "version",
+			prop:   "tabwriter output",
+			inSrc:  src.versionHasTabwriter,
+			inTmpl: strings.Contains(tmpl.version, "tabwriter.NewWriter"),
+		},
+		{
+			tmpl:   "man",
+			prop:   "Section int field in Config",
+			inSrc:  src.mangoHasSectionField,
+			inTmpl: strings.Contains(tmpl.man, "\tSection int\n"),
+			patch: &templatePatch{
+				templateFile: "man.go.tmpl",
+				replacements: []replacePair{
+					{
+						"\t*ROOT_PKG.Config\n\tFlags   *ff.FlagSet",
+						"\t*ROOT_PKG.Config\n\tSection int\n\tFlags   *ff.FlagSet",
 					},
 				},
 			},

@@ -185,7 +185,7 @@ func (cfg *Config) exec(_ context.Context, _ []string) error {
 - `New` and `Config` are the only exported identifiers in the package (commands that need a user-visible package-level variable, such as `Version string`, may export it too).
 - `New` appends to `parent.Command.Subcommands` — no other registration needed.
 - Flag values are bound to `Config` fields in `New()`, not inside `exec`.
-- Every behavioural knob must be a registered flag on `cfg.Flags`. Never use hard-coded values, package-level variables, or `os.Getenv` calls outside the flag set — they make settings invisible to `-h`.
+- Every behavioral knob must be a registered flag on `cfg.Flags`. Never use hard-coded values, package-level variables, or `os.Getenv` calls outside the flag set — they make settings invisible to `-h`.
 - `SetParent(parent.Flags)` must be called on every subcommand flag set so that parent flags are accepted at any depth.
 - Write to `cfg.Stdout` / `cfg.Stderr`. Never use `os.Stdout` / `os.Stderr` directly.
 - Return `error`. Do not call `os.Exit` inside a command; use `root.ExitError` instead.

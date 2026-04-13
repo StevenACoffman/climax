@@ -43,14 +43,25 @@ func New(parent *root.Config) *Config {
 structure against the scaffold template files in pkg/scaffold/templates/.
 
 This command is for climax's own development workflow — run it whenever you
-change a structural pattern in main.go, cmd/cmd.go, or cmd/root/root.go to
-detect whether the scaffold templates need updating.
+change a structural pattern in main.go, cmd/cmd.go, cmd/root/root.go,
+cmd/version/version.go, or cmd/mango/mango.go to detect whether the
+corresponding scaffold templates need updating.
+
+File mapping (source → template):
+
+  main.go                   →  main.go.tmpl
+  cmd/cmd.go                →  cmd.go.tmpl
+  cmd/root/root.go          →  root.go.tmpl
+  cmd/version/version.go    →  version.go.tmpl
+  cmd/mango/mango.go        →  man.go.tmpl
 
 Structural properties checked:
 
   main      signal.NotifyContext, run() separation, os.Stdin passed to cmd.Run
   cmd       stdin io.Reader parameter in Run, stdin forwarded to root.New
   root      Stdin io.Reader field, stdin parameter in New, cfg.Stdin assignment
+  version   JSON flag in Config, tabwriter output
+  man       Section int field in Config
 
 Without --apply the command prints a drift report and exits non-zero when drift
 is found (suitable for CI). With --apply it patches the template files in-place
