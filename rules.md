@@ -18,6 +18,7 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not group packages by type (`models/`, `controllers/`, `handlers/`) — group by dependency instead.
 - Do not allow the root package to import any other package in the application.
 - Do not use global variables for application state (DB connections, config, etc.).
+  - **Exception:** `var Version = "dev"` in `cmd/version/` is permitted. The Go linker's `-ldflags "-X <pkg>.Version=<val>"` can only override a package-level `var` — a `const` or local variable cannot be set at link time. This is the only mutable global allowed in a command package.
 - Do not put business logic in `main` — it only wires dependencies.
 - Do not put the `main` package in the project root — put binaries under `cmd/`.
 - Do not enforce authorization in HTTP handlers or middleware — enforce it in service implementations, embedded in SQL where possible.
@@ -28,7 +29,7 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not use other CLI frameworks (cobra, urfave/cli, etc.). Use `github.com/peterbourgon/ff/v4`.
 - Do not use interfaces for command polymorphism. Use the `ff.Command` struct with the Config struct pattern.
 - Do not call `Parse`, `Run`, or any other method on `ff.Command` from command packages. Those are called by the dispatcher in `cmd/cmd.go`.
-- Do not register commands in `init()` or globals. Call `New()` in `cmd/cmd.go` only.
+- Do not use `init()` functions. `init()` runs unconditionally at startup before flag parsing, its effects cannot be suppressed in tests, and execution order across packages is implicit. Call `New()` in `cmd/cmd.go` for registration; initialize resources inside `exec` when they are actually needed (e.g. read build info in the version command's `exec`, not at program startup).
 - Do not bind flag values inside `exec`. Bind them in `New()` — they are already parsed before `exec` is called.
 - Do not call `os.Exit` inside a command. Return errors or `root.ExitError`; only `run()` in `main.go` controls exit codes.
 - Do not use `os.Stdout` / `os.Stderr` directly. Write to `cfg.Stdout` / `cfg.Stderr` (from `root.Config`).
@@ -682,13 +683,13 @@ if !ok {
 }
 ```
 
-The dispatcher suppresses help output for `ExitError`, and `run()` calls `os.Exit` with the code directly.
+The dispatcher suppresses help output for `ExitError`, and `run()` returns the code as an `int` so that `main()` can call `stop()` before `os.Exit`.
 
 ### Entry Point (CLI)
 
-`main.go` is intentionally thin. It sets up signal-safe shutdown via `signal.NotifyContext` and delegates to a separate `run()` function. The `defer stop()` must live in `main`, not in `run`, because `run()` calls `os.Exit` and deferred calls inside `run` would never execute.
+`main.go` is intentionally thin. It sets up signal-safe shutdown via `signal.NotifyContext` and delegates to a separate `run()` function. `run()` returns an `int` exit code so that `main()` can call `stop()` before `os.Exit`. If `run()` called `os.Exit` directly, `stop()` would never execute, leaving the signal-handler goroutine running until the process terminated.
 
-`ff.ErrHelp` and `ff.ErrNoExec` are not failures. `root.ExitError` bypasses the `"error: ..."` printer and calls `os.Exit` directly.
+`ff.ErrHelp` and `ff.ErrNoExec` are not failures. `root.ExitError` bypasses the `"error: ..."` printer.
 
 ```go
 // main.go
@@ -713,29 +714,28 @@ const (
 )
 
 func main() {
-	// defer stop *must* be here in main *not* run (a different function)
-	// to guarantee the deferred stop is called. Please preserve this comment.
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt,    // SIGINT = Ctrl+C
 		syscall.SIGQUIT, // Ctrl-\
 		syscall.SIGTERM, // polite termination request
 	)
-	defer stop()
-	run(ctx)
+	code := run(ctx)
+	stop()
+	os.Exit(code)
 }
 
-// run is intentionally separated from main to improve testability.
-func run(ctx context.Context) {
+// run is intentionally separated from main to improve testability. Please preserve this comment.
+func run(ctx context.Context) int {
 	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	var exitErr root.ExitError
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
-		os.Exit(exitSuccess)
+		return exitSuccess
 	case errors.As(err, &exitErr):
-		os.Exit(int(exitErr))
+		return int(exitErr)
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
-		os.Exit(exitFail)
+		return exitFail
 	}
 }
 ```
@@ -747,7 +747,8 @@ func run(ctx context.Context) {
 | Every configurable knob is a registered flag | Hard-coded values and out-of-band `os.Getenv` calls silently break `-h` discoverability and make the configuration surface invisible to operators |
 | Use `ff`; no other CLI frameworks           | `ff` provides flags, subcommand dispatch, and help with minimal surface area  |
 | No Commander interface                      | Go composition via `Exec` function pointer is sufficient                      |
-| No `init()` for registration                | `New()` calls in `cmd.go` are explicit and easy to trace                      |
+| No `init()` functions                       | `init()` runs at startup before flag parsing, cannot be suppressed in tests, and has implicit ordering; register commands in `New()` and initialize resources inside `exec` when needed |
+| No package-level mutable state, **except** `var Version = "dev"` | `-ldflags "-X <pkg>.Version=<val>"` can only override a `var`; `const` and local variables are link-time immutable — this is the one permitted global in a command package |
 | Config struct per command                   | Carries parsed flag values and inherited I/O; avoids global state             |
 | Flag values bound in `New()`, not in `exec` | Flags are parsed before `exec` is called; binding in `exec` is too late       |
 | `SetParent` on every subcommand flag set    | Allows parent flags (e.g. `--verbose`) to be accepted at any subcommand level |

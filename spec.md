@@ -241,10 +241,18 @@ func (cfg *Config) exec(_ context.Context, _ []string) error { return nil }
 
 ### Concrete Example — version command
 
-The generated version command reads the module version from build info at startup.
-`var Version = "dev"` acts as a sentinel; when the binary is installed via
-`go install` or built from a tagged release, `init()` replaces it automatically.
-Override at link time only when the auto-detected value is incorrect.
+The generated version command prints rich build info (VCS commit, build date,
+Go version, platform) with an optional `--json` flag for machine-readable output.
+
+`var Version = "dev"` is a **deliberate exception** to the no-global-variables
+rule: the Go linker's `-ldflags "-X <pkg>.Version=<val>"` mechanism can only
+override a package-level `var`, not a constant or a local variable. This is the
+only package-level mutable variable permitted in a climax command.
+
+Do not use `init()` to populate it. `init()` runs unconditionally at program
+startup before any flag parsing, its side effects cannot be suppressed in tests,
+and the version string is only needed when the `version` subcommand actually
+runs. Read build info inside `exec` instead.
 
 ```go
 // cmd/version/version.go
@@ -252,52 +260,135 @@ package version
 
 import (
     "context"
+    "encoding/json"
     "fmt"
+    "runtime"
     "runtime/debug"
+    "strings"
+    "text/tabwriter"
+    "time"
 
     "github.com/peterbourgon/ff/v4"
     "<org>/<repo>/cmd/root"
 )
 
+// Version is the application version string. When built from a tagged release
+// or installed via "go install", the Go toolchain embeds the module version
+// automatically, and it is read from build info at startup. Override at link
+// time only if the auto-detected value is incorrect:
+//
+//	go build -ldflags "-X '<org>/<repo>/cmd/version.Version=v1.2.3'"
 var Version = "dev"
 
-func init() {
-    if Version != "dev" {
-        return
-    }
-    bi, ok := debug.ReadBuildInfo()
-    if !ok {
-        return
-    }
-    if v := bi.Main.Version; v != "" && v != "(devel)" {
-        Version = v
-    }
+// versionInfo holds build and VCS metadata for structured output.
+type versionInfo struct {
+    GitVersion   string `json:"gitVersion"`
+    GitCommit    string `json:"gitCommit"`
+    GitTreeState string `json:"gitTreeState"`
+    BuildDate    string `json:"buildDate"`
+    GoVersion    string `json:"goVersion"`
+    Compiler     string `json:"compiler"`
+    Platform     string `json:"platform"`
 }
 
+// Config holds the configuration for the version command.
 type Config struct {
     *root.Config
+    JSON    bool
     Flags   *ff.FlagSet
     Command *ff.Command
 }
 
+// New creates and registers the version command with the given parent config.
 func New(parent *root.Config) *Config {
     var cfg Config
     cfg.Config = parent
     cfg.Flags = ff.NewFlagSet("version").SetParent(parent.Flags)
+    cfg.Flags.BoolVar(&cfg.JSON, 0, "json", "output version information as JSON")
     cfg.Command = &ff.Command{
         Name:      "version",
-        Usage:     "<cli-name> version",
+        Usage:     "<cli-name> version [--json]",
         ShortHelp: "print version information",
-        LongHelp:  "Prints the version of <cli-name>. The version is read from module build info at startup and can be overridden at link time with -ldflags.",
-        Flags:     cfg.Flags,
-        Exec:      cfg.exec,
+        LongHelp: `Print build and version information for this <cli-name> binary.
+
+Fields shown:
+
+  GitVersion    module version tag (e.g. v0.3.1) or "devel" for local builds
+  GitCommit     VCS commit hash
+  GitTreeState  "clean" or "dirty" (whether the working tree had uncommitted changes)
+  BuildDate     timestamp of the VCS commit used for the build
+  GoVersion     Go toolchain version (e.g. go1.23.0)
+  Compiler      Go compiler name (usually "gc")
+  Platform      GOOS/GOARCH pair (e.g. darwin/arm64)
+
+Use --json to get machine-readable output suitable for scripting.`,
+        Flags: cfg.Flags,
+        Exec:  cfg.exec,
     }
     parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
     return &cfg
 }
 
+func gatherVersionInfo(bi *debug.BuildInfo) versionInfo {
+    const unknown = "unknown"
+    info := versionInfo{
+        GitVersion:   Version,
+        GitCommit:    unknown,
+        GitTreeState: unknown,
+        BuildDate:    unknown,
+        GoVersion:    runtime.Version(),
+        Compiler:     runtime.Compiler,
+        Platform:     fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
+    }
+    if bi == nil {
+        return info
+    }
+    if (info.GitVersion == "dev" || info.GitVersion == "") &&
+        bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+        info.GitVersion = bi.Main.Version
+    }
+    for _, s := range bi.Settings {
+        switch s.Key {
+        case "vcs.revision":
+            info.GitCommit = s.Value
+        case "vcs.modified":
+            switch s.Value {
+            case "true":
+                info.GitTreeState = "dirty"
+            case "false":
+                info.GitTreeState = "clean"
+            }
+        case "vcs.time":
+            if t, err := time.Parse("2006-01-02T15:04:05Z", s.Value); err == nil {
+                info.BuildDate = t.Format("2006-01-02T15:04:05")
+            }
+        }
+    }
+    return info
+}
+
 func (cfg *Config) exec(_ context.Context, _ []string) error {
-    _, _ = fmt.Fprintln(cfg.Stdout, Version)
+    bi, _ := debug.ReadBuildInfo()
+    info := gatherVersionInfo(bi)
+    if cfg.JSON {
+        b, err := json.MarshalIndent(info, "", "  ")
+        if err != nil {
+            return fmt.Errorf("version: %w", err)
+        }
+        _, _ = fmt.Fprintln(cfg.Stdout, string(b))
+        return nil
+    }
+    var b strings.Builder
+    w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+    _, _ = fmt.Fprintf(w, "GitVersion:\t%s\n", info.GitVersion)
+    _, _ = fmt.Fprintf(w, "GitCommit:\t%s\n", info.GitCommit)
+    _, _ = fmt.Fprintf(w, "GitTreeState:\t%s\n", info.GitTreeState)
+    _, _ = fmt.Fprintf(w, "BuildDate:\t%s\n", info.BuildDate)
+    _, _ = fmt.Fprintf(w, "GoVersion:\t%s\n", info.GoVersion)
+    _, _ = fmt.Fprintf(w, "Compiler:\t%s\n", info.Compiler)
+    _, _ = fmt.Fprintf(w, "Platform:\t%s\n", info.Platform)
+    _ = w.Flush()
+    _, _ = fmt.Fprint(cfg.Stdout, b.String())
     return nil
 }
 ```
@@ -338,7 +429,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
     // register new commands here
 
     if err := r.Command.Parse(args); err != nil {
-        fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
+        _, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
         return fmt.Errorf("parse: %w", err)
     }
 
@@ -346,7 +437,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
         // Suppress help output for ErrNoExec and ExitError — both are intentional.
         var exitErr root.ExitError
         if !errors.Is(err, ff.ErrNoExec) && !errors.As(err, &exitErr) {
-            fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
+            _, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
         }
         return err
     }
@@ -371,8 +462,13 @@ ______________________________________________________________________
 `signal.NotifyContext` and delegates to a separate `run()` function
 (which improves testability — test harnesses can call `run` directly).
 
+`run()` returns an `int` exit code. `main()` calls `stop()` first, then
+`os.Exit`. If `run()` called `os.Exit` directly, `stop()` would never execute,
+leaving the signal-handler goroutine running until the process terminated anyway
+— a subtle goroutine leak and a violation of the no-`os.Exit`-outside-main rule.
+
 `ff.ErrHelp` and `ff.ErrNoExec` are not failures. `root.ExitError` bypasses
-the `"error: ..."` printer and calls `os.Exit` directly.
+the `"error: ..."` printer.
 
 ```go
 // main.go
@@ -397,29 +493,28 @@ const (
 )
 
 func main() {
-    // defer stop *must* be here in main *not* run (a different function)
-    // to guarantee the deferred stop is called. Please preserve this comment.
     ctx, stop := signal.NotifyContext(context.Background(),
         os.Interrupt,    // SIGINT = Ctrl+C
         syscall.SIGQUIT, // Ctrl-\
         syscall.SIGTERM, // polite termination request
     )
-    defer stop()
-    run(ctx)
+    code := run(ctx)
+    stop()
+    os.Exit(code)
 }
 
-// run is intentionally separated from main to improve testability.
-func run(ctx context.Context) {
+// run is intentionally separated from main to improve testability. Please preserve this comment.
+func run(ctx context.Context) int {
     err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
     var exitErr root.ExitError
     switch {
     case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
-        os.Exit(exitSuccess)
+        return exitSuccess
     case errors.As(err, &exitErr):
-        os.Exit(int(exitErr))
+        return int(exitErr)
     default:
         _, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
-        os.Exit(exitFail)
+        return exitFail
     }
 }
 ```
@@ -618,12 +713,14 @@ ______________________________________________________________________
 | Every configurable knob is a registered flag | Hard-coded values and out-of-band `os.Getenv` calls silently break `-h` discoverability and make the configuration surface invisible to operators |
 | Use `ff`; no other CLI frameworks | `ff` provides flags, subcommand dispatch, and help with minimal surface area |
 | No `Commander` interface | Go composition via `Exec` function pointer is sufficient |
-| No `init()` for registration | `New()` calls in `cmd.go` are explicit and easy to trace |
+| No `init()` functions | `init()` runs unconditionally at startup before flag parsing, its side effects cannot be suppressed in tests, and execution order across packages is implicit; use `New()` in `cmd/cmd.go` for registration and initialize resources inside `exec` when they are needed |
+| No package-level mutable variables, **except** `var Version = "dev"` in `cmd/version/` | `go build -ldflags "-X <pkg>.Version=<val>"` can only override a `var` — `const` and local variables are link-time immutable; this is the one sanctioned global in a climax command |
 | Config struct per command | Carries parsed flag values and inherited I/O; avoids global state |
 | Flag values bound in `New()`, not in `exec` | Flags are parsed before `exec` is called; binding in `exec` is too late |
 | `SetParent` on every subcommand flag set | Allows parent flags to be accepted at any subcommand depth |
 | Never use `os.Stdout`/`os.Stderr` directly | Write to `cfg.Stdout`/`cfg.Stderr` for testability |
-| Return `root.ExitError`, not `os.Exit` | Commands don't control the process; only `run()` in `main.go` calls `os.Exit` |
+| Return `root.ExitError`, not `os.Exit` | Commands don't control the process; only `main()` calls `os.Exit` — after `stop()` releases the signal context |
+| `run()` returns `int`; `main()` calls `stop()` then `os.Exit` | `os.Exit` inside `run()` would bypass `stop()`, leaving the signal-handler goroutine running until the process terminates |
 | Errors bubble to `main` | `run()` is the single place that maps errors to exit codes |
 | `ff.ErrHelp` and `ff.ErrNoExec` are success | Handle both in `run()`'s switch; do not propagate as failures |
 
