@@ -254,20 +254,22 @@ func parsedSourceFromTemplate(
 	// the template can be parsed with go/parser. Callers supply overrides
 	// (e.g. ROOT_PKG) for accurate per-app output.
 	defaults := map[string]string{
-		"APP_IMPORT":     "example.com/app",
-		"APP_NAME":       "app",
-		"APP_SHORT":      "an application",
-		"ROOT_PKG":       "root",
-		"LONG_HELP_LINE": "",
-		"VERSION_IMPORT": "",
-		"VERSION_CALL":   "",
-		"EXEC_IMPORTS":   "",
-		"EXEC_BODY":      "\treturn nil\n",
-		"PARENT_PKG":     "root",
-		"CMD_NAME":       "serve",
-		"CMD_FF_NAME":    "serve",
-		"CMD_SHORT":      "a command",
-		"CMD_LONG":       "A command.",
+		"APP_IMPORT":        "example.com/app",
+		"APP_NAME":          "app",
+		"APP_SHORT":         "an application",
+		"ROOT_PKG":          "root",
+		"LONG_HELP_LINE":    "",
+		"VERSION_IMPORT":    "",
+		"VERSION_CALL":      "",
+		"EXEC_IMPORTS":      "",
+		"EXEC_BODY":         "\treturn nil\n",
+		"PARENT_PKG":        "root",
+		"CMD_NAME":          "serve",
+		"CMD_FF_NAME":       "serve",
+		"CMD_SHORT":         "a command",
+		"CMD_LONG":          "A command.",
+		"MAN_SECTION":       "1",
+		"MAN_WITH_SECTIONS": "",
 	}
 	merged := make(map[string]string, len(defaults)+len(overrides))
 	maps.Copy(merged, defaults)

@@ -771,6 +771,38 @@ func run(ctx context.Context) int {
 - [ ] Call `<name>.New(r)` in the registration block in `cmd/cmd.go`
 - [ ] Add the import for the new package in `cmd/cmd.go`
 
+### Testing CLI Commands
+
+Test CLI commands end-to-end by wiring real I/O buffers and invoking the command through
+`Parse` + `Run`, exactly as `main` does — no mocking of flag parsing or subcommand dispatch.
+
+```go
+// cmd/update/update_test.go
+package update_test   // external test package — testpackage linter requires this
+
+func runUpdateCommand(t *testing.T, path string) (stdout, stderr string, err error) {
+    t.Helper()
+    var outBuf, errBuf strings.Builder
+    parent := root.New(strings.NewReader(""), &outBuf, &errBuf)
+    update.New(parent)
+    if parseErr := parent.Command.Parse([]string{"update", path}); parseErr != nil {
+        t.Fatalf("parse: %v", parseErr)
+    }
+    err = parent.Command.Run(context.Background())
+    return outBuf.String(), errBuf.String(), err
+}
+```
+
+Key patterns:
+
+- **Captured I/O** — pass `strings.Builder` for stdout and stderr; assert on `.String()` output.
+- **`t.TempDir()`** — create isolated temporary directories for filesystem-touching tests; Go cleans them up automatically.
+- **`t.Parallel()`** — safe for CLI tests because each invocation has its own wired I/O and any filesystem state lives in a `t.TempDir()` that is unique per test.
+- **External test package** — put tests in `package <name>_test`, not `package <name>`. The `testpackage` linter enforces this. When a test needs to call an unexported function, expose it via `export_test.go` (see below).
+
+Use `context.Background()` directly; CLI tests do not need cancellation because the command
+returns synchronously.
+
 ______________________________________________________________________
 
 ## HTTP Layer
@@ -1569,7 +1601,12 @@ func TestAsyncThing(t *testing.T) {
 
 ### Parallelization
 
-**Unit tests:** Do not use `t.Parallel()`. Parallel tests make failures ambiguous — you cannot tell whether a failure is a logic bug or a race condition.
+**Unit tests that share mutable state:** Do not use `t.Parallel()`. Parallel tests make
+failures ambiguous — you cannot tell whether a failure is a logic bug or a race condition.
+
+**CLI command tests:** `t.Parallel()` is safe. Each invocation has its own wired I/O
+(`strings.Builder`) and any filesystem state lives in a `t.TempDir()` scoped to that test.
+The `tparallel` linter enforces `t.Parallel()` inside subtests — use it there too.
 
 **Run-based integration tests:** `t.Parallel()` is safe when calling `run()` end-to-end, because `run` has no global state. Each invocation has its own wired dependencies.
 
@@ -1702,6 +1739,29 @@ Test files use the external test package to test the exported API:
 // sqlite/user_test.go
 package sqlite_test
 ```
+
+When a test needs to call an unexported function from an external test package, expose it
+through an `export_test.go` file in the **internal** package (not `_test`):
+
+```go
+// cmd/update/export_test.go  — compiled only during `go test`
+package update              // internal package, not update_test
+
+import (
+    "io"
+    "github.com/example/app/pkg/scaffold"
+)
+
+// PrintReport is a test-only alias for the unexported printReport function.
+var PrintReport = func(w io.Writer, total, autoFixCount int, fixable, manual []scaffold.DriftItem) {
+    printReport(w, total, autoFixCount, fixable, manual)
+}
+```
+
+The `export_test.go` file is part of the package under test, so it can access unexported
+symbols, but it is compiled only when running tests. The `testpackage` linter's
+`skip-regexp: (export|internal)_test\.go` setting exempts this file from the external-package
+requirement — configure that in `.golangci.yaml` if you add `export_test.go` to a package.
 
 ### Networking
 

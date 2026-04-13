@@ -62,8 +62,12 @@ type sourceInfo struct {
 	rootHasStdinParam bool
 	rootAssignsStdin  bool
 	// cmd/version/version.go properties
-	versionHasJSONFlag  bool
-	versionHasTabwriter bool
+	versionHasJSONFlag                   bool
+	versionHasTabwriter                  bool
+	versionHasGetVersionInfoFrom         bool
+	versionInfoMethodsUsePointerReceiver bool
+	versionHasOptionType                 bool
+	versionHasOptionConstructors         bool
 	// cmd/mango/mango.go → man.go.tmpl properties
 	mangoHasSectionField bool
 }
@@ -77,6 +81,14 @@ func defaultTemplates() templateSet {
 		version: versionTemplate,
 		man:     manCmdTemplate,
 	}
+}
+
+// IsFixable reports whether this drift item can be automatically repaired by
+// ApplyFixes. It returns true only when the check defined a string-replacement
+// patch — not all source-has/template-lacks items are auto-patchable (e.g.
+// tabwriter output or GetVersionInfoFrom require a broader template rewrite).
+func (d DriftItem) IsFixable() bool {
+	return d.patch != nil
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -118,16 +130,42 @@ func DetectDrift(climaxDir string) ([]DriftItem, error) {
 	}
 
 	src := sourceInfo{
-		mainHasSignal:        astHasCall(main, "main", "NotifyContext"),
-		mainHasRunFunc:       astHasFuncDecl(main, "run"),
-		mainPassesStdin:      astCallPassesIdent(main, "run", "cmd", "Run", "Stdin"),
-		cmdHasStdinParam:     astFuncHasIOReaderParam(cmdFile, "Run"),
-		cmdPassesStdin:       astCallPassesIdent(cmdFile, "Run", "root", "New", "stdin"),
-		rootHasStdinField:    astStructHasField(rootFile, "Config", "Stdin"),
-		rootHasStdinParam:    astFuncHasIOReaderParam(rootFile, "New"),
-		rootAssignsStdin:     astFuncAssignsField(rootFile, "New", "Stdin"),
-		versionHasJSONFlag:   astStructHasField(versionFile, "Config", "JSON"),
-		versionHasTabwriter:  strings.Contains(string(versionSrc), "tabwriter.NewWriter"),
+		mainHasSignal:  astHasCall(main, "main", "NotifyContext"),
+		mainHasRunFunc: astHasFuncDecl(main, "run"),
+		mainPassesStdin: astCallPassesIdent(
+			main,
+			"run",
+			"cmd",
+			"Run",
+			"Stdin",
+		),
+		cmdHasStdinParam: astFuncHasIOReaderParam(cmdFile, "Run"),
+		cmdPassesStdin: astCallPassesIdent(
+			cmdFile,
+			"Run",
+			"root",
+			"New",
+			"stdin",
+		),
+		rootHasStdinField:  astStructHasField(rootFile, "Config", "Stdin"),
+		rootHasStdinParam:  astFuncHasIOReaderParam(rootFile, "New"),
+		rootAssignsStdin:   astFuncAssignsField(rootFile, "New", "Stdin"),
+		versionHasJSONFlag: astStructHasField(versionFile, "Config", "JSON"),
+		versionHasTabwriter: strings.Contains(
+			string(versionSrc),
+			"tabwriter.NewWriter",
+		),
+		versionHasGetVersionInfoFrom: astHasFuncDecl(versionFile, "GetVersionInfoFrom"),
+		versionInfoMethodsUsePointerReceiver: astMethodHasPointerReceiver(
+			versionFile,
+			"Info",
+			"String",
+		) &&
+			astMethodHasPointerReceiver(versionFile, "Info", "JSONString"),
+		versionHasOptionType: astHasTypeDecl(versionFile, "Option"),
+		versionHasOptionConstructors: astHasFuncDecl(versionFile, "WithAppDetails") &&
+			astHasFuncDecl(versionFile, "WithASCIIName") &&
+			astHasFuncDecl(versionFile, "WithBuiltBy"),
 		mangoHasSectionField: astStructHasField(mangoFile, "Config", "Section"),
 	}
 
@@ -356,6 +394,40 @@ func run(ctx context.Context) int {
 			inTmpl: strings.Contains(tmpl.version, "tabwriter.NewWriter"),
 		},
 		{
+			tmpl:   "version",
+			prop:   "GetVersionInfoFrom function",
+			inSrc:  src.versionHasGetVersionInfoFrom,
+			inTmpl: strings.Contains(tmpl.version, "func GetVersionInfoFrom("),
+		},
+		{
+			tmpl:  "version",
+			prop:  "Info methods use pointer receivers",
+			inSrc: src.versionInfoMethodsUsePointerReceiver,
+			inTmpl: strings.Contains(tmpl.version, "func (i *Info) String()") &&
+				strings.Contains(tmpl.version, "func (i *Info) JSONString()"),
+			patch: &templatePatch{
+				templateFile: "version.go.tmpl",
+				replacements: []replacePair{
+					{"func (i Info) String()", "func (i *Info) String()"},
+					{"func (i Info) JSONString()", "func (i *Info) JSONString()"},
+				},
+			},
+		},
+		{
+			tmpl:   "version",
+			prop:   "Option type",
+			inSrc:  src.versionHasOptionType,
+			inTmpl: strings.Contains(tmpl.version, "type Option func("),
+		},
+		{
+			tmpl:  "version",
+			prop:  "WithAppDetails, WithASCIIName, WithBuiltBy constructors",
+			inSrc: src.versionHasOptionConstructors,
+			inTmpl: strings.Contains(tmpl.version, "func WithAppDetails(") &&
+				strings.Contains(tmpl.version, "func WithASCIIName(") &&
+				strings.Contains(tmpl.version, "func WithBuiltBy("),
+		},
+		{
 			tmpl:   "man",
 			prop:   "Section int field in Config",
 			inSrc:  src.mangoHasSectionField,
@@ -441,6 +513,23 @@ func astHasCall(file *ast.File, funcName, callName string) bool {
 // astHasFuncDecl returns true if file declares a top-level function named name.
 func astHasFuncDecl(file *ast.File, name string) bool {
 	return findFuncDecl(file, name) != nil
+}
+
+// astHasTypeDecl returns true if file declares a top-level type named name.
+func astHasTypeDecl(file *ast.File, name string) bool {
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if ok && ts.Name.Name == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // astCallPassesIdent returns true if, inside funcName's body, there is a call
@@ -564,6 +653,33 @@ func astFuncAssignsField(file *ast.File, funcName, fieldName string) bool {
 		return true
 	})
 	return found
+}
+
+// astMethodHasPointerReceiver returns true if the named method on receiverType
+// uses a pointer receiver (e.g. func (i *Info) String() satisfies
+// astMethodHasPointerReceiver(f, "Info", "String")).
+//
+// Methods on other types that share the same name are skipped; the function
+// only returns true when both the receiver type and the star match.
+func astMethodHasPointerReceiver(file *ast.File, receiverType, methodName string) bool {
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Recv == nil || len(fd.Recv.List) == 0 {
+			continue
+		}
+		if fd.Name.Name != methodName {
+			continue
+		}
+		star, ok := fd.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		ident, ok := star.X.(*ast.Ident)
+		if ok && ident.Name == receiverType {
+			return true
+		}
+	}
+	return false
 }
 
 // findFuncDecl returns the first top-level function declaration named name, or nil.

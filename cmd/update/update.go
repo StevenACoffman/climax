@@ -6,6 +6,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -60,7 +61,8 @@ Structural properties checked:
   main      signal.NotifyContext, run() separation, os.Stdin passed to cmd.Run
   cmd       stdin io.Reader parameter in Run, stdin forwarded to root.New
   root      Stdin io.Reader field, stdin parameter in New, cfg.Stdin assignment
-  version   JSON flag in Config, tabwriter output
+  version   JSON flag in Config, tabwriter output, GetVersionInfoFrom function,
+            Info methods pointer receivers, Option type, With* constructors
   man       Section int field in Config
 
 Without --apply the command prints a drift report and exits non-zero when drift
@@ -98,7 +100,7 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 		_, _ = fmt.Fprintf(cfg.Stderr, "  found module: %s\n", info.Module)
 		_, _ = fmt.Fprintf(cfg.Stderr, "  expected:     %s\n", climaxModule)
 		_, _ = fmt.Fprintf(cfg.Stderr, "  directory:    %s\n", absDir)
-		return fmt.Errorf("update: this command can only run against the climax module itself")
+		return errors.New("update: this command can only run against the climax module itself")
 	}
 
 	// Detect drift via AST analysis.
@@ -112,18 +114,23 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 		return nil
 	}
 
-	// Separate fixable from informational items.
+	// Separate source-has (fixable direction) from template-has (manual review),
+	// and count how many source-has items have an auto-fix patch.
 	var fixable, manual []scaffold.DriftItem
+	autoFixCount := 0
 	for _, item := range items {
 		if item.InSource == "present" && item.InTemplate == "absent" {
 			fixable = append(fixable, item)
+			if item.IsFixable() {
+				autoFixCount++
+			}
 		} else {
 			manual = append(manual, item)
 		}
 	}
 
 	// Print drift report.
-	printReport(cfg.Stdout, len(items), fixable, manual)
+	printReport(cfg.Stdout, len(items), autoFixCount, fixable, manual)
 
 	if !cfg.Apply {
 		fmt.Fprintln(cfg.Stdout, "Run with --apply to patch the template files automatically.")
@@ -134,15 +141,18 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 	if err := scaffold.ApplyFixes(info.Root, items); err != nil {
 		return fmt.Errorf("applying fixes: %w", err)
 	}
-	_, _ = fmt.Fprintf(cfg.Stdout, "✓  Patched %d item(s) in template files.\n", len(fixable))
+	_, _ = fmt.Fprintf(cfg.Stdout, "✓  Patched %d item(s) in template files.\n", autoFixCount)
 	return nil
 }
 
 // printReport writes the drift summary to w.
-func printReport(w io.Writer, total int, fixable, manual []scaffold.DriftItem) {
+// autoFixCount is the number of items in fixable that have an auto-fix patch
+// and will be repaired by --apply; not every source-has/template-lacks item
+// is auto-patchable (some require a broader template rewrite).
+func printReport(w io.Writer, total, autoFixCount int, fixable, manual []scaffold.DriftItem) {
 	_, _ = fmt.Fprintf(w, "Drift detected: %d item(s)", total)
-	if len(fixable) > 0 {
-		_, _ = fmt.Fprintf(w, " (%d fixable with --apply)", len(fixable))
+	if autoFixCount > 0 {
+		_, _ = fmt.Fprintf(w, " (%d auto-fixable with --apply)", autoFixCount)
 	}
 	_, _ = fmt.Fprintf(w, "\n\n")
 

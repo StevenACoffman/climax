@@ -108,14 +108,31 @@ func TestParsedSourceFromTemplate_version(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsedSourceFromTemplate(versionTemplate): %v", err)
 	}
-	// exec is a method, not a top-level func; check New and gatherVersionInfo.
-	for _, want := range []string{"New", "gatherVersionInfo"} {
+	// exec is a method, not a top-level func; check top-level functions.
+	for _, want := range []string{"New", "gatherVersionInfo", "GetVersionInfoFrom", "WithBuiltBy"} {
 		if findFuncDecl(ps.file, want) == nil {
 			t.Errorf("func %s not found in parsed versionTemplate", want)
 		}
 	}
 	if !astStructHasField(ps.file, "Config", "JSON") {
 		t.Error("Config.JSON field not found in parsed versionTemplate")
+	}
+}
+
+func TestParsedSourceFromTemplate_man(t *testing.T) {
+	ps, err := parsedSourceFromTemplate(
+		"man.go",
+		manCmdTemplate,
+		map[string]string{"ROOT_PKG": "root"},
+	)
+	if err != nil {
+		t.Fatalf("parsedSourceFromTemplate(manCmdTemplate): %v", err)
+	}
+	if !astStructHasField(ps.file, "Config", "Section") {
+		t.Error("Config.Section field not found in parsed manCmdTemplate")
+	}
+	if findFuncDecl(ps.file, "New") == nil {
+		t.Error("func New not found in parsed manCmdTemplate")
 	}
 }
 

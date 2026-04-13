@@ -497,6 +497,35 @@ func TestProbeRootConfig_missingFile(t *testing.T) {
 	}
 }
 
+func TestAstMethodHasPointerReceiver(t *testing.T) {
+	// Includes a *Config.String() before *Info.String() to exercise the
+	// "continue past wrong-type methods" path fixed from the original
+	// "return ok && ident.Name == receiverType" early-exit bug.
+	const src = `package foo
+type Config struct{}
+type Info struct{}
+func (c *Config) String() string { return "cfg" }
+func (i *Info)   String() string { return "info" }
+func (i  Info)   JSONString() (string, error) { return "", nil }
+`
+	ps, err := parsedSourceFromTemplate("foo.go", src, nil)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if !astMethodHasPointerReceiver(ps.file, "Info", "String") {
+		t.Error("expected *Info.String() to be detected as pointer receiver")
+	}
+	if astMethodHasPointerReceiver(ps.file, "Info", "JSONString") {
+		t.Error(
+			"Info.JSONString() has a value receiver; should not be detected as pointer receiver",
+		)
+	}
+	if !astMethodHasPointerReceiver(ps.file, "Config", "String") {
+		t.Error("expected *Config.String() to be detected as pointer receiver")
+	}
+}
+
 // writeRootFile writes src to <tmpdir>/cmd/<pkg>/<pkg>.go and returns tmpdir.
 func writeRootFile(t *testing.T, pkg, src string) string {
 	t.Helper()

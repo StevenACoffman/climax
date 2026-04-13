@@ -254,44 +254,52 @@ startup before any flag parsing, its side effects cannot be suppressed in tests,
 and the version string is only needed when the `version` subcommand actually
 runs. Read build info inside `exec` instead.
 
+The canonical implementation lives in `pkg/scaffold/templates/version.go.tmpl`. Key structural
+elements that the scaffold enforces (and `climax update` monitors):
+
+**`type Option func(i *Info)`** — functional-options type for post-gather customization.
+
+**`type Info struct`** — exported struct with JSON tags. Fields: `GitVersion`, `ModuleSum`,
+`GitCommit`, `GitTreeState`, `BuildDate`, `BuiltBy`, `GoVersion`, `Compiler`, `Platform`
+(all JSON-serialized), plus `ASCIIName`, `Name`, `Description`, `URL` (JSON `-`, display only).
+
+**`type Config struct`** — embeds `*root.Config`, adds `JSON bool`, `Flags`, `Command`.
+
+**`With*` constructors** — `WithAppDetails(name, description, url string) Option`,
+`WithASCIIName(name string) Option`, `WithBuiltBy(name string) Option`.
+
+**`GetVersionInfoFrom(bi *debug.BuildInfo, _ string, options ...Option) *Info`** — builds an
+`Info` from an explicit `BuildInfo`, applying options. Accepts `nil` (all VCS fields become
+`"unknown"`). Use this in tests to avoid touching global state.
+
+**Pointer-receiver output methods on `*Info`**: `String() string` (tabwriter-aligned key:value
+output) and `JSONString() (string, error)` (indented JSON).
+
 ```go
-// cmd/version/version.go
+// cmd/version/version.go  (abbreviated — see version.go.tmpl for full source)
 package version
 
-import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "runtime"
-    "runtime/debug"
-    "strings"
-    "text/tabwriter"
-    "time"
-
-    "github.com/peterbourgon/ff/v4"
-    "<org>/<repo>/cmd/root"
-)
-
-// Version is the application version string. When built from a tagged release
-// or installed via "go install", the Go toolchain embeds the module version
-// automatically, and it is read from build info at startup. Override at link
-// time only if the auto-detected value is incorrect:
-//
-//	go build -ldflags "-X '<org>/<repo>/cmd/version.Version=v1.2.3'"
 var Version = "dev"
 
-// versionInfo holds build and VCS metadata for structured output.
-type versionInfo struct {
+type Option func(i *Info)
+
+type Info struct {
     GitVersion   string `json:"gitVersion"`
+    ModuleSum    string `json:"moduleChecksum"`
     GitCommit    string `json:"gitCommit"`
     GitTreeState string `json:"gitTreeState"`
     BuildDate    string `json:"buildDate"`
+    BuiltBy      string `json:"builtBy"`
     GoVersion    string `json:"goVersion"`
     Compiler     string `json:"compiler"`
     Platform     string `json:"platform"`
+
+    ASCIIName   string `json:"-"`
+    Name        string `json:"-"`
+    Description string `json:"-"`
+    URL         string `json:"-"`
 }
 
-// Config holds the configuration for the version command.
 type Config struct {
     *root.Config
     JSON    bool
@@ -299,98 +307,19 @@ type Config struct {
     Command *ff.Command
 }
 
-// New creates and registers the version command with the given parent config.
-func New(parent *root.Config) *Config {
-    var cfg Config
-    cfg.Config = parent
-    cfg.Flags = ff.NewFlagSet("version").SetParent(parent.Flags)
-    cfg.Flags.BoolVar(&cfg.JSON, 0, "json", "output version information as JSON")
-    cfg.Command = &ff.Command{
-        Name:      "version",
-        Usage:     "<cli-name> version [--json]",
-        ShortHelp: "print version information",
-        LongHelp: `Print build and version information for this <cli-name> binary.
+func WithAppDetails(name, description, url string) Option { … }
+func WithASCIIName(name string) Option                    { … }
+func WithBuiltBy(name string) Option                      { … }
 
-Fields shown:
+func New(parent *root.Config) *Config { … }
 
-  GitVersion    module version tag (e.g. v0.3.1) or "devel" for local builds
-  GitCommit     VCS commit hash
-  GitTreeState  "clean" or "dirty" (whether the working tree had uncommitted changes)
-  BuildDate     timestamp of the VCS commit used for the build
-  GoVersion     Go toolchain version (e.g. go1.23.0)
-  Compiler      Go compiler name (usually "gc")
-  Platform      GOOS/GOARCH pair (e.g. darwin/arm64)
+func GetVersionInfoFrom(bi *debug.BuildInfo, _ string, options ...Option) *Info { … }
 
-Use --json to get machine-readable output suitable for scripting.`,
-        Flags: cfg.Flags,
-        Exec:  cfg.exec,
-    }
-    parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
-    return &cfg
-}
+func (i *Info) String() string           { … } // tabwriter key:value
+func (i *Info) JSONString() (string, error) { … } // json.MarshalIndent
 
-func gatherVersionInfo(bi *debug.BuildInfo) versionInfo {
-    const unknown = "unknown"
-    info := versionInfo{
-        GitVersion:   Version,
-        GitCommit:    unknown,
-        GitTreeState: unknown,
-        BuildDate:    unknown,
-        GoVersion:    runtime.Version(),
-        Compiler:     runtime.Compiler,
-        Platform:     fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
-    }
-    if bi == nil {
-        return info
-    }
-    if (info.GitVersion == "dev" || info.GitVersion == "") &&
-        bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-        info.GitVersion = bi.Main.Version
-    }
-    for _, s := range bi.Settings {
-        switch s.Key {
-        case "vcs.revision":
-            info.GitCommit = s.Value
-        case "vcs.modified":
-            switch s.Value {
-            case "true":
-                info.GitTreeState = "dirty"
-            case "false":
-                info.GitTreeState = "clean"
-            }
-        case "vcs.time":
-            if t, err := time.Parse("2006-01-02T15:04:05Z", s.Value); err == nil {
-                info.BuildDate = t.Format("2006-01-02T15:04:05")
-            }
-        }
-    }
-    return info
-}
-
-func (cfg *Config) exec(_ context.Context, _ []string) error {
-    bi, _ := debug.ReadBuildInfo()
-    info := gatherVersionInfo(bi)
-    if cfg.JSON {
-        b, err := json.MarshalIndent(info, "", "  ")
-        if err != nil {
-            return fmt.Errorf("version: %w", err)
-        }
-        _, _ = fmt.Fprintln(cfg.Stdout, string(b))
-        return nil
-    }
-    var b strings.Builder
-    w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-    _, _ = fmt.Fprintf(w, "GitVersion:\t%s\n", info.GitVersion)
-    _, _ = fmt.Fprintf(w, "GitCommit:\t%s\n", info.GitCommit)
-    _, _ = fmt.Fprintf(w, "GitTreeState:\t%s\n", info.GitTreeState)
-    _, _ = fmt.Fprintf(w, "BuildDate:\t%s\n", info.BuildDate)
-    _, _ = fmt.Fprintf(w, "GoVersion:\t%s\n", info.GoVersion)
-    _, _ = fmt.Fprintf(w, "Compiler:\t%s\n", info.Compiler)
-    _, _ = fmt.Fprintf(w, "Platform:\t%s\n", info.Platform)
-    _ = w.Flush()
-    _, _ = fmt.Fprint(cfg.Stdout, b.String())
-    return nil
-}
+func gatherVersionInfo(bi *debug.BuildInfo) Info { … }
+func (cfg *Config) exec(_ context.Context, _ []string) error { … }
 ```
 
 ______________________________________________________________________
@@ -662,28 +591,40 @@ and the scaffold template files in `pkg/scaffold/templates/`. Only runs against
 the climax module itself (`github.com/StevenACoffman/climax`). Run after changing
 a structural pattern in `main.go`, `cmd/cmd.go`, or `cmd/root/root.go`.
 
-Eight structural properties are checked independently (vs. three groups in `lint`):
+Fifteen structural properties are checked independently (vs. three groups in `lint`):
 
 | File | Properties |
 |---|---|
 | `main.go` | `signal.NotifyContext`, `run()` separation, `os.Stdin` passed to `cmd.Run` |
 | `cmd/cmd.go` | `stdin io.Reader` parameter in `Run`, `stdin` forwarded to `root.New` |
 | `cmd/root/root.go` | `Stdin io.Reader` field, `stdin io.Reader` parameter in `New`, `cfg.Stdin = stdin` assignment |
+| `cmd/version/version.go` | `JSON` flag in `Config`, tabwriter output, `GetVersionInfoFrom` function, `Info` methods use pointer receivers, `Option` type, `With*` constructors |
+| `cmd/mango/mango.go` | `Section int` field in `Config` |
+
+Each drift item falls into one of three categories:
+
+- **`✗` auto-fixable** — source has the property, template lacks it, and a string-replacement patch is defined. Fixed by `--apply`.
+- **`✗` manual-needed** — source has the property, template lacks it, but no patch exists (e.g. `tabwriter` output format or `GetVersionInfoFrom` require a broader template rewrite). Reported but not auto-patched.
+- **`⚠` manual review** — template has the property, source does not. Removing things from templates is a deliberate decision; never auto-patched.
 
 Without `--apply`, prints a drift report and exits non-zero:
 
 ```
-Drift detected: 2 item(s) (2 fixable with --apply)
+Drift detected: 3 item(s) (2 auto-fixable with --apply)
 
   ✗  main    signal.NotifyContext
   ✗  cmd     stdin io.Reader parameter in Run
+  ✗  version tabwriter output
+
+  Requires manual review (template has property, source does not):
+  ⚠   root    Stdin io.Reader field
 
 Run with --apply to patch the template files automatically.
 ```
 
-Items where the template has a property the source does not are flagged for
-manual review (prefix `⚠`) and are never auto-patched. With `--apply`, fixable
-items (`✗`) are patched in-place in the template files.
+The `(N auto-fixable with --apply)` label is omitted when `N` is zero. With `--apply`,
+only the auto-fixable items are patched in-place in the template files; the others remain
+in the report for manual action.
 
 ### `climax version [--json]`
 
