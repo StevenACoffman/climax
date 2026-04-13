@@ -24,9 +24,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Install gowheels
-        run: go install github.com/StevenACoffman/gowheels@${{ github.event.release.tag_name }}
+        run: go install github.com/StevenACoffman/gowheels@main
 
       - name: Build wheels and publish to PyPI
         run: gowheels pypi --name climax --repo ${{ github.repository }} --upload
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOWHEELS_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

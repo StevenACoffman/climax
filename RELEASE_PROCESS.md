@@ -19,6 +19,8 @@ Releases are published to GitHub using [GoReleaser](https://goreleaser.com). The
 export GITHUB_TOKEN=<your-token>
 ```
 
+`GITHUB_TOKEN` is used by GoReleaser to publish the GitHub release. `gowheels pypi` reads its own `GOWHEELS_GITHUB_TOKEN` env var to download release assets without hitting API rate limits — these are separate variables.
+
 ## Steps
 
 ### 1. Tag the release
@@ -85,13 +87,13 @@ Wheels are written to `./dist/`. Inspect them before uploading.
 ### Build and upload to PyPI in one step
 
 ```sh
-export GITHUB_TOKEN=<your-token>   # avoids GitHub API rate limits
-export PYPI_TOKEN=<your-pypi-token>
+export GOWHEELS_GITHUB_TOKEN=<your-token>    # read as --github-token; avoids GitHub API rate limits
+export GOWHEELS_PYPI_TOKEN=<your-pypi-token> # read as --pypi-token; authenticates the upload
 
 gowheels pypi --name climax --repo StevenACoffman/climax --upload
 ```
 
-`gowheels pypi` fetches the release assets from GitHub, extracts the binary from each archive, wraps it in a platform-specific wheel, and uploads each wheel to PyPI.
+`GOWHEELS_GITHUB_TOKEN` and `GOWHEELS_PYPI_TOKEN` are read automatically from the environment — no `--github-token` or `--pypi-token` flags are needed when they are set. `gowheels pypi` fetches the release assets from GitHub, extracts the binary from each archive, wraps it in a platform-specific wheel, and uploads each wheel to PyPI.
 
 To target a specific release tag rather than the latest:
 
@@ -103,7 +105,7 @@ gowheels pypi --name climax --repo StevenACoffman/climax --version v0.1.0 --uplo
 
 ## Appendix: Automated PyPI publishing via GitHub Actions
 
-`.github/workflows/postrelease.yaml` runs automatically whenever a GitHub release is published. It uses `gowheels pypi --upload` to build the wheels and publish them to PyPI via OIDC in a single step — no `PYPI_TOKEN` secret is required.
+`.github/workflows/postrelease.yaml` runs automatically whenever a GitHub release is published. It uses `gowheels pypi --upload` to build the wheels and publish them to PyPI via OIDC in a single step — no `GOWHEELS_PYPI_TOKEN` secret is required.
 
 ### One-time setup: PyPI trusted publishing
 
