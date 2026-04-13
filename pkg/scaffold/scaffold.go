@@ -37,6 +37,8 @@ type InitOptions struct {
 
 // InitApp writes a complete Climax application scaffold to dir and returns
 // the relative paths of every file it creates, in the order they were written.
+//
+//nolint:gocritic // hugeParam: InitOptions is an options struct; passing by value is idiomatic
 func InitApp(dir string, opts InitOptions) ([]string, error) {
 	// Fill in defaults.
 	parts := strings.Split(opts.ImportPrefix, "/")
@@ -200,6 +202,94 @@ func AddCommand(
 		modifiedRel = info.path // fallback to absolute path
 	}
 	return createdRel, modifiedRel, nil
+}
+
+// ManOptions controls what AddManCommand generates for the man subcommand.
+type ManOptions struct {
+	// Section is the man page section number (1–8). Defaults to 1.
+	Section int
+	// Authors is baked into a WithSection("Authors", ...) call when non-empty.
+	Authors string
+	// Copyright is baked into a WithSection("Copyright", ...) call when non-empty.
+	Copyright string
+}
+
+// AddManCommand creates cmd/man/man.go in the climax application rooted at dir
+// and registers it in the dispatcher. importPrefix is the Go module import path
+// for the application root.
+//
+// It returns the relative paths of the created file and the modified dispatcher.
+// After running AddManCommand, the caller must ensure the target application
+// adds the required dependencies:
+//
+//	go get github.com/StevenACoffman/mango-ff github.com/muesli/roff
+func AddManCommand(
+	dir, importPrefix string,
+	opts ManOptions,
+) (created, modified string, err error) {
+	if opts.Section < 1 || opts.Section > 8 {
+		opts.Section = 1
+	}
+
+	info, src, err := analyzeDispatcher(dir)
+	if err != nil {
+		return "", "", fmt.Errorf("reading dispatcher: %w", err)
+	}
+
+	cliName := info.cliName
+	if cliName == "" {
+		cliName = extractCLIName(dir, info.rootPkg)
+	}
+	if cliName == "" {
+		parts := strings.Split(importPrefix, "/")
+		cliName = parts[len(parts)-1]
+	}
+
+	vars := map[string]string{
+		"APP_IMPORT":        importPrefix,
+		"APP_NAME":          cliName,
+		"ROOT_PKG":          info.rootPkg,
+		"MAN_SECTION":       strconv.Itoa(opts.Section),
+		"MAN_WITH_SECTIONS": manWithSectionsBlock(opts.Authors, opts.Copyright),
+	}
+
+	createdRel := filepath.Join("cmd", "man", "man.go")
+	if err := writeFile(
+		filepath.Join(dir, createdRel),
+		applyVars(manCmdTemplate, vars),
+	); err != nil {
+		return "", "", err
+	}
+
+	if err := registerInCmdGo(info, src, "man", importPrefix, info.rootPkg); err != nil {
+		return "", "", err
+	}
+
+	modifiedRel, relErr := filepath.Rel(dir, info.path)
+	if relErr != nil {
+		modifiedRel = info.path
+	}
+	return createdRel, modifiedRel, nil
+}
+
+// manWithSectionsBlock returns the source lines that chain WithSection calls
+// onto the manPage variable, or an empty string when neither authors nor
+// copyright is set. The returned string is ready to be spliced directly into
+// the template — it ends with a newline when non-empty.
+func manWithSectionsBlock(authors, copyright string) string {
+	if authors == "" && copyright == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\tmanPage = manPage")
+	if authors != "" {
+		b.WriteString(".\n\t\tWithSection(\"Authors\", " + strconv.Quote(authors) + ")")
+	}
+	if copyright != "" {
+		b.WriteString(".\n\t\tWithSection(\"Copyright\", " + strconv.Quote(copyright) + ")")
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // registerInCmdGo injects the new command's import and New() call into the

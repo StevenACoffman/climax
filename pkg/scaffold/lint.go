@@ -25,6 +25,13 @@ type LintIssue struct {
 	Diff string
 }
 
+// parsedSource holds a parsed Go file and its raw bytes for text extraction.
+type parsedSource struct {
+	file *ast.File
+	fset *token.FileSet
+	src  []byte
+}
+
 // LintApp analyses the climax application at appDir and returns one LintIssue
 // per structural group that deviates from the current scaffold templates.
 // Issues are grouped by file/concern so each produces exactly one diff block.
@@ -125,22 +132,15 @@ func LintApp(appDir string) ([]LintIssue, error) {
 
 // ─── Source extraction ────────────────────────────────────────────────────────
 
-// parsedSource holds a parsed Go file and its raw bytes for text extraction.
-type parsedSource struct {
-	file *ast.File
-	fset *token.FileSet
-	src  []byte
-}
-
 func parseSource(path string) (*parsedSource, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return &parsedSource{file: file, fset: fset, src: src}, nil
 }
@@ -244,34 +244,33 @@ func (ps *parsedSource) extractStructAndFunc(structName, funcName string) string
 // extracting the relevant declarations. This guarantees lint checks stay in
 // sync with the templates automatically.
 
-// dummyTemplateVars maps every template placeholder to a syntactically valid
-// Go value so the template can be parsed with go/parser. Callers override
-// specific keys (e.g. ROOT_PKG) for accurate per-app output.
-var dummyTemplateVars = map[string]string{
-	"APP_IMPORT":     "example.com/app",
-	"APP_NAME":       "app",
-	"APP_SHORT":      "an application",
-	"ROOT_PKG":       "root",
-	"LONG_HELP_LINE": "",
-	"VERSION_IMPORT": "",
-	"VERSION_CALL":   "",
-	"EXEC_IMPORTS":   "",
-	"EXEC_BODY":      "\treturn nil\n",
-	"PARENT_PKG":     "root",
-	"CMD_NAME":       "serve",
-	"CMD_FF_NAME":    "serve",
-	"CMD_SHORT":      "a command",
-	"CMD_LONG":       "A command.",
-}
-
-// parsedSourceFromTemplate applies overrides on top of dummyTemplateVars,
-// expands tmpl, and parses it as Go source under the synthetic name synName.
+// parsedSourceFromTemplate applies overrides on top of the default template
+// placeholder values, expands tmpl, and parses it as Go source under synName.
 func parsedSourceFromTemplate(
 	synName, tmpl string,
 	overrides map[string]string,
 ) (*parsedSource, error) {
-	merged := make(map[string]string, len(dummyTemplateVars)+len(overrides))
-	maps.Copy(merged, dummyTemplateVars)
+	// defaults maps every placeholder to a syntactically valid Go value so
+	// the template can be parsed with go/parser. Callers supply overrides
+	// (e.g. ROOT_PKG) for accurate per-app output.
+	defaults := map[string]string{
+		"APP_IMPORT":     "example.com/app",
+		"APP_NAME":       "app",
+		"APP_SHORT":      "an application",
+		"ROOT_PKG":       "root",
+		"LONG_HELP_LINE": "",
+		"VERSION_IMPORT": "",
+		"VERSION_CALL":   "",
+		"EXEC_IMPORTS":   "",
+		"EXEC_BODY":      "\treturn nil\n",
+		"PARENT_PKG":     "root",
+		"CMD_NAME":       "serve",
+		"CMD_FF_NAME":    "serve",
+		"CMD_SHORT":      "a command",
+		"CMD_LONG":       "A command.",
+	}
+	merged := make(map[string]string, len(defaults)+len(overrides))
+	maps.Copy(merged, defaults)
 	maps.Copy(merged, overrides)
 	src := []byte(applyVars(tmpl, merged))
 	fset := token.NewFileSet()

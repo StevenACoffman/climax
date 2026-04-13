@@ -7,6 +7,7 @@ package update
 import (
 	"context"
 	"fmt"
+	"io"
 	"path/filepath"
 
 	"github.com/peterbourgon/ff/v4"
@@ -83,13 +84,10 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 		return fmt.Errorf("finding go.mod: %w", err)
 	}
 	if info.Module != climaxModule {
-		return fmt.Errorf(
-			"this command can only be run against the climax module itself\n"+
-				"  found module: %s\n"+
-				"  expected:     %s\n"+
-				"  directory:    %s",
-			info.Module, climaxModule, absDir,
-		)
+		_, _ = fmt.Fprintf(cfg.Stderr, "  found module: %s\n", info.Module)
+		_, _ = fmt.Fprintf(cfg.Stderr, "  expected:     %s\n", climaxModule)
+		_, _ = fmt.Fprintf(cfg.Stderr, "  directory:    %s\n", absDir)
+		return fmt.Errorf("update: this command can only run against the climax module itself")
 	}
 
 	// Detect drift via AST analysis.
@@ -114,30 +112,7 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 	}
 
 	// Print drift report.
-	fmt.Fprintf(cfg.Stdout, "Drift detected: %d item(s)", len(items))
-	if len(fixable) > 0 {
-		fmt.Fprintf(cfg.Stdout, " (%d fixable with --apply)", len(fixable))
-	}
-	fmt.Fprintf(cfg.Stdout, "\n\n")
-
-	if len(fixable) > 0 {
-		for _, item := range fixable {
-			fmt.Fprintf(cfg.Stdout, "  ✗  %-6s  %s\n", item.Template, item.Property)
-		}
-	}
-	if len(manual) > 0 {
-		if len(fixable) > 0 {
-			fmt.Fprintln(cfg.Stdout)
-		}
-		fmt.Fprintln(
-			cfg.Stdout,
-			"  Requires manual review (template has property, source does not):",
-		)
-		for _, item := range manual {
-			fmt.Fprintf(cfg.Stdout, "  ⚠   %-6s  %s\n", item.Template, item.Property)
-		}
-	}
-	fmt.Fprintln(cfg.Stdout)
+	printReport(cfg.Stdout, len(items), fixable, manual)
 
 	if !cfg.Apply {
 		fmt.Fprintln(cfg.Stdout, "Run with --apply to patch the template files automatically.")
@@ -148,6 +123,29 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 	if err := scaffold.ApplyFixes(info.Root, items); err != nil {
 		return fmt.Errorf("applying fixes: %w", err)
 	}
-	fmt.Fprintf(cfg.Stdout, "✓  Patched %d item(s) in template files.\n", len(fixable))
+	_, _ = fmt.Fprintf(cfg.Stdout, "✓  Patched %d item(s) in template files.\n", len(fixable))
 	return nil
+}
+
+// printReport writes the drift summary to w.
+func printReport(w io.Writer, total int, fixable, manual []scaffold.DriftItem) {
+	_, _ = fmt.Fprintf(w, "Drift detected: %d item(s)", total)
+	if len(fixable) > 0 {
+		_, _ = fmt.Fprintf(w, " (%d fixable with --apply)", len(fixable))
+	}
+	_, _ = fmt.Fprintf(w, "\n\n")
+
+	for _, item := range fixable {
+		_, _ = fmt.Fprintf(w, "  ✗  %-6s  %s\n", item.Template, item.Property)
+	}
+	if len(manual) > 0 {
+		if len(fixable) > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, "  Requires manual review (template has property, source does not):")
+		for _, item := range manual {
+			_, _ = fmt.Fprintf(w, "  ⚠   %-6s  %s\n", item.Template, item.Property)
+		}
+	}
+	fmt.Fprintln(w)
 }

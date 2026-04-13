@@ -37,6 +37,18 @@ type templatePatch struct {
 
 type replacePair struct{ old, new string }
 
+// sourceInfo caches all structural properties extracted from the real source.
+type sourceInfo struct {
+	mainHasSignal     bool
+	mainHasRunFunc    bool
+	mainPassesStdin   bool
+	cmdHasStdinParam  bool
+	cmdPassesStdin    bool
+	rootHasStdinField bool
+	rootHasStdinParam bool
+	rootAssignsStdin  bool
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 // DetectDrift analyses climaxDir (the root of the climax module) and returns
@@ -118,20 +130,6 @@ func ApplyFixes(climaxDir string, items []DriftItem) error {
 	return nil
 }
 
-// ─── Source analysis ─────────────────────────────────────────────────────────
-
-// sourceInfo caches all structural properties extracted from the real source.
-type sourceInfo struct {
-	mainHasSignal     bool
-	mainHasRunFunc    bool
-	mainPassesStdin   bool
-	cmdHasStdinParam  bool
-	cmdPassesStdin    bool
-	rootHasStdinField bool
-	rootHasStdinParam bool
-	rootAssignsStdin  bool
-}
-
 // ─── Checks ──────────────────────────────────────────────────────────────────
 
 func runChecks(src sourceInfo) []DriftItem {
@@ -177,22 +175,23 @@ func runChecks(src sourceInfo) []DriftItem {
 	}
 }`,
 						`func main() {
-	// defer stop *must* be here in main *not* run (a different function)
-	// to guarantee the deferred stop is called. Please preserve this comment.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	run(ctx)
+	ctx, stop := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM,
+	)
+	code := run(ctx)
+	stop()
+	os.Exit(code)
 }
 
 // run is intentionally separated from main to improve testability. Please preserve this comment.
-func run(ctx context.Context) {
+func run(ctx context.Context) int {
 	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
-		os.Exit(exitSuccess)
+		return exitSuccess
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
-		os.Exit(exitFail)
+		return exitFail
 	}
 }`,
 					},
@@ -322,7 +321,7 @@ func parseFile(path string) (*ast.File, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return f, nil
 }
@@ -425,6 +424,8 @@ func astFuncHasIOReaderParam(file *ast.File, funcName string) bool {
 
 // astStructHasField returns true if the struct type named structName in file
 // declares a field named fieldName.
+//
+//nolint:unparam // structName is always "Config" today but the function is kept general
 func astStructHasField(file *ast.File, structName, fieldName string) bool {
 	for _, decl := range file.Decls {
 		gd, ok := decl.(*ast.GenDecl)

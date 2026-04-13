@@ -1,6 +1,7 @@
 package scaffold_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,7 +68,8 @@ func TestGoVet_InitThenAdd(t *testing.T) {
 // run executes cmd in dir and fails the test on any error.
 func run(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
-	cmd := exec.Command(name, args...)
+	//nolint:gosec // G204: subprocess with variable is intentional — this helper calls "go" tool
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if len(out) > 0 {

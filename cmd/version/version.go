@@ -4,12 +4,23 @@ package version
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 
 	"github.com/peterbourgon/ff/v4"
 
 	"github.com/StevenACoffman/climax/cmd/root"
 	pkgversion "github.com/StevenACoffman/climax/pkg/version"
 )
+
+// Version is the application version string. When built from a tagged release
+// or installed via "go install", the Go toolchain embeds the module version
+//
+//	automatically, and it is read from build info at startup. Override at link
+//
+// time only if the auto-detected value is incorrect:
+//
+//	go build -ldflags "-X 'APP_IMPORT/cmd/version.Version=v1.2.3'"
+var Version = "dev"
 
 // Config holds the configuration for the version command.
 type Config struct {
@@ -52,7 +63,8 @@ Use --json to get machine-readable output suitable for scripting.`,
 }
 
 func (cfg *Config) exec(_ context.Context, _ []string) error {
-	info := pkgversion.GetVersionInfo()
+	bi, _ := debug.ReadBuildInfo()
+	info := pkgversion.GetVersionInfoFrom(bi, Version)
 	if cfg.JSON {
 		s, err := info.JSONString()
 		if err != nil {

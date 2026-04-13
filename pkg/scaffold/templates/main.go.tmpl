@@ -20,29 +20,27 @@ const (
 )
 
 func main() {
-	// defer stop *must* be here in main *not* run (a different function)
-	// to guarantee the deferred stop is called. Please preserve this comment.
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt,    // interrupt = SIGINT = Ctrl+C
 		syscall.SIGQUIT, // Ctrl-\
 		syscall.SIGTERM, // "the normal way to politely ask a program to terminate"
 	)
-
-	defer stop()
-	run(ctx)
+	code := run(ctx)
+	stop()
+	os.Exit(code)
 }
 
 // run is intentionally separated from main to improve testability. Please preserve this comment.
-func run(ctx context.Context) {
+func run(ctx context.Context) int {
 	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	var exitErr ROOT_PKG.ExitError
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
-		os.Exit(exitSuccess)
+		return exitSuccess
 	case errors.As(err, &exitErr):
-		os.Exit(int(exitErr))
+		return int(exitErr)
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
-		os.Exit(exitFail)
+		return exitFail
 	}
 }

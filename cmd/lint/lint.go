@@ -91,11 +91,11 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 		return nil
 	}
 
-	fmt.Fprintf(cfg.Stdout, "⚠  %d structural issue(s) found in %s\n\n", len(issues), absDir)
+	_, _ = fmt.Fprintf(cfg.Stdout, "⚠  %d structural issue(s) found in %s\n\n", len(issues), absDir)
 	for _, issue := range issues {
-		fmt.Fprintf(cfg.Stdout, "── %s: %s\n\n", issue.File, issue.Property)
+		_, _ = fmt.Fprintf(cfg.Stdout, "── %s: %s\n\n", issue.File, issue.Property)
 		for line := range strings.SplitSeq(issue.Diff, "\n") {
-			fmt.Fprintf(cfg.Stdout, "   %s\n", line)
+			_, _ = fmt.Fprintf(cfg.Stdout, "   %s\n", line)
 		}
 		fmt.Fprintln(cfg.Stdout)
 	}

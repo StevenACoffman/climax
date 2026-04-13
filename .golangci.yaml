@@ -37,6 +37,10 @@ linters:
     - nilerr          # don't return nil on a non-nil error value
     - nilnil          # never return (nil, nil) — rules.md
     - wrapcheck       # errors from external packages must be wrapped — rules.md
+    - bidichk         # detect bidirectional Unicode control characters (trojan-source)
+    - durationcheck   # detect time.Duration * time.Duration multiplications
+    - wastedassign    # detect assignments whose value is never read before overwrite
+    - predeclared     # warn when a name shadows a predeclared identifier (len, cap, error, …)
     # ── style / architecture ─────────────────────────────────────────────────
     - revive          # general Go style (error-strings, exported, var-naming, …)
     - gochecknoglobals # no package-level mutable state — rules.md
@@ -48,12 +52,18 @@ linters:
     - maintidx        # maintainability index floor
     - iface           # minimal interfaces; accept iface, return concrete — rules.md
     - gosec           # security checks
+    - gocritic        # extended diagnostic, performance, and style checks
+    - unconvert       # remove unnecessary type conversions
+    - asciicheck      # identifiers must be printable ASCII
+    - misspell        # detect typos in comments and string literals
     # ── context ──────────────────────────────────────────────────────────────
     - noctx           # no http.Get/Head without context
     - contextcheck    # context must propagate through call chains
     # ── testing ──────────────────────────────────────────────────────────────
     - testpackage     # tests in package_test (black-box) — rules.md
     - thelper         # t.Helper() at top of test helper funcs — rules.md
+    - tparallel       # enforce t.Parallel() in subtests; scaffold tests use t.TempDir() so isolation is safe
+    - testableexamples # Example* functions must have // Output: comments; go test silently skips examples without them
     # ── dependency hygiene ───────────────────────────────────────────────────
     - depguard        # ban CLI frameworks (cobra, urfave/cli, pflag) — spec.md
     - forbidigo       # ban os.Exit outside main; ban fmt.Print* in cmds — spec.md
@@ -73,11 +83,62 @@ linters:
       disable-dec-order-check: false
       disable-init-func-first-check: false
 
+    # ── errcheck ─────────────────────────────────────────────────────────────
+    # Suppress unactionable write errors: Write on an io.Writer (e.g. cmd.Stdout),
+    # WriteString/WriteByte on in-memory builders, and fmt.Fprintln used for
+    # diagnostic output. These functions document that their errors are safe to
+    # ignore in the normal case, and checking them produces noise without safety benefit.
+    errcheck:
+      exclude-functions:
+        - (io.Writer).Write
+        - (http.ResponseWriter).Write
+        - (*bytes.Buffer).WriteByte
+        - (*strings.Builder).WriteByte
+        - (*strings.Builder).WriteString
+        - io.Copy
+        - io.WriteString
+        - fmt.Fprintln
+
     # ── funlen ───────────────────────────────────────────────────────────────
     # rules.md: functions should be short and focused.
     funlen:
       lines: 60
       statements: 40
+
+    # ── gocritic ─────────────────────────────────────────────────────────────
+    # Enable all three tag groups for broad coverage. Disabled checks are
+    # suppressed because they are stylistically opinionated without a clear
+    # correctness benefit or conflict with other enforced rules:
+    #   appendAssign      — flags `a, b = append(a, …), append(b, …)`; common idiom
+    #   unnamedResult     — conflicts with cases where named returns aid clarity
+    #   paramTypeCombine  — parameter grouping is a formatting preference, not a bug
+    #   commentedOutCode  — dead code is caught by unused/staticcheck; this is noisy
+    #   sprintfQuotedString — `fmt.Sprintf("%q", s)` is clearer than strconv.Quote for some uses
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - appendAssign
+        - unnamedResult
+        - paramTypeCombine
+        - commentedOutCode
+        - sprintfQuotedString
+
+    # ── govet ────────────────────────────────────────────────────────────────
+    # Enable analyzers that are off by default but catch real bugs:
+    #   nilness      — detects impossible nil comparisons and nil dereferences
+    #   unusedwrite  — detects writes to variables whose value is never subsequently read
+    #   unusedresult — detects ignored return values of functions annotated //noescape
+    #   sortslice    — detects sort.Slice calls whose less function references
+    #                  the wrong index variable (a common copy-paste error)
+    govet:
+      enable:
+        - nilness
+        - unusedwrite
+        - unusedresult
+        - sortslice
 
     # ── maintidx ─────────────────────────────────────────────────────────────
     # Flag functions with a maintainability index below 20 (golangci-lint default).
@@ -107,6 +168,7 @@ linters:
       skip-regexp: (export|internal)_test\.go
       allow-packages:
         - main
+        - scaffold # ast_test.go and lint_test.go access unexported AST helpers
 
     # ── thelper ──────────────────────────────────────────────────────────────
     # rules.md: test helper functions must call t.Helper() as their first statement.
@@ -240,6 +302,25 @@ linters:
         linters:
           - funlen          # template constants inflate the line count
           - decorder        # templates section is intentionally kept at the bottom of the file
+
+      # drift.go: runChecks is a data-driven function — 170 lines of check specs,
+      # not nested logic. Extracting it would harm readability.
+      - path: pkg/scaffold/drift\.go
+        linters:
+          - funlen
+
+      # lint.go: LintApp coordinates three independent AST checks; splitting it
+      # would require threading state across multiple helpers without clarity gain.
+      - path: pkg/scaffold/lint\.go
+        linters:
+          - funlen
+
+      # cmd/version/version.go: var Version must be a var (not const) so that
+      # -ldflags "-X .../cmd/version.Version=v1.2.3" can override it at link time.
+      # gochecknoglobals does not understand this idiom.
+      - path: cmd/version/version\.go$
+        linters:
+          - gochecknoglobals
 
       # main.go: os.Exit(exitFail) is the correct and only call site.
       - path: main\.go$

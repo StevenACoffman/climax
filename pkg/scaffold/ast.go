@@ -39,6 +39,16 @@ type parentCallResult struct {
 	lineEnd    int    // byte offset of the first byte of the next line
 }
 
+// rootConfigInfo describes the observable I/O-related fields of the root
+// Config struct. Used to adapt the exec stub in generated command files
+// and to detect drift between the actual source and generated templates.
+type rootConfigInfo struct {
+	hasStdin    bool   // Config has a field named Stdin (io.Reader or similar)
+	hasStdout   bool   // Config has a field named Stdout (io.Writer or similar)
+	hasStderr   bool   // Config has a field named Stderr
+	loggerField string // name of a logger field, e.g. "Logger"; "" if none found
+}
+
 // findDispatcherFile locates the Go source file in cmd/ that acts as the
 // climax dispatcher. It checks canonical names first, then falls back to a
 // full directory scan. A file is accepted if it has both text markers or
@@ -422,16 +432,6 @@ func insertAt(src []byte, offset int, text string) []byte {
 	out = append(out, text...)
 	out = append(out, src[offset:]...)
 	return out
-}
-
-// rootConfigInfo describes the observable I/O-related fields of the root
-// Config struct. Used to adapt the exec stub in generated command files
-// and to detect drift between the actual source and generated templates.
-type rootConfigInfo struct {
-	hasStdin    bool   // Config has a field named Stdin (io.Reader or similar)
-	hasStdout   bool   // Config has a field named Stdout (io.Writer or similar)
-	hasStderr   bool   // Config has a field named Stderr
-	loggerField string // name of a logger field, e.g. "Logger"; "" if none found
 }
 
 // probeRootConfig parses cmd/<rootPkg>/<rootPkg>.go and reports which

@@ -62,7 +62,7 @@ func TestLintExpectedMain_containsKeyPatterns(t *testing.T) {
 		"signal.NotifyContext",
 		"func run(",
 		"os.Stdin",
-		"defer stop()",
+		"os.Exit(code)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lintExpectedMain: missing %q", want)
@@ -96,6 +96,26 @@ func TestLintExpectedRoot_stdinPresent(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("lintExpectedRoot: missing %q\ngot:\n%s", want, got)
 		}
+	}
+}
+
+func TestParsedSourceFromTemplate_version(t *testing.T) {
+	ps, err := parsedSourceFromTemplate(
+		"version.go",
+		versionTemplate,
+		map[string]string{"ROOT_PKG": "root"},
+	)
+	if err != nil {
+		t.Fatalf("parsedSourceFromTemplate(versionTemplate): %v", err)
+	}
+	// exec is a method, not a top-level func; check New and gatherVersionInfo.
+	for _, want := range []string{"New", "gatherVersionInfo"} {
+		if findFuncDecl(ps.file, want) == nil {
+			t.Errorf("func %s not found in parsed versionTemplate", want)
+		}
+	}
+	if !astStructHasField(ps.file, "Config", "JSON") {
+		t.Error("Config.JSON field not found in parsed versionTemplate")
 	}
 }
 

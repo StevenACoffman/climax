@@ -1,5 +1,6 @@
-// Package cmd is the dispatcher for the climax CLI. It registers all commands
-// and routes incoming arguments to the matching command implementation.
+// Package cmd is the dispatcher for the climax CLI.
+// It registers all commands and routes incoming arguments
+// to the matching command implementation.
 package cmd
 
 // climax:name climax
@@ -17,6 +18,7 @@ import (
 	"github.com/StevenACoffman/climax/cmd/add"
 	"github.com/StevenACoffman/climax/cmd/initialize"
 	"github.com/StevenACoffman/climax/cmd/lint"
+	"github.com/StevenACoffman/climax/cmd/mango"
 	"github.com/StevenACoffman/climax/cmd/root"
 	"github.com/StevenACoffman/climax/cmd/update"
 	"github.com/StevenACoffman/climax/cmd/version"
@@ -31,10 +33,11 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	add.New(r)
 	update.New(r)
 	lint.New(r)
+	mango.New(r)
 	// register new commands here
 
 	if err := r.Command.Parse(args); err != nil {
-		fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
+		_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
 		return fmt.Errorf("parse: %w", err)
 	}
 
@@ -43,7 +46,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		// ExitError (command already reported its own outcome).
 		var exitErr root.ExitError
 		if !errors.Is(err, ff.ErrNoExec) && !errors.As(err, &exitErr) {
-			fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
+			_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
 		}
 		return err
 	}

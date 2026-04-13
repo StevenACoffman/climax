@@ -43,7 +43,10 @@ func getBuildInfo() *debug.BuildInfo {
 	return bi
 }
 
-func getGitVersion(bi *debug.BuildInfo) string {
+func getGitVersion(bi *debug.BuildInfo, linkFlagOverride string) string {
+	if linkFlagOverride != "dev" && linkFlagOverride != "" {
+		return linkFlagOverride
+	}
 	if bi == nil {
 		return ""
 	}
@@ -121,21 +124,21 @@ func WithBuiltBy(name string) Option {
 
 // GetVersionInfo returns build information for the running binary.
 func GetVersionInfo(options ...Option) *Info {
-	return GetVersionInfoFrom(getBuildInfo(), options...)
+	return GetVersionInfoFrom(getBuildInfo(), "", options...)
 }
 
 // GetVersionInfoFrom builds an Info from an explicit BuildInfo value.
 // Passing nil returns an Info with all VCS fields set to "unknown" and
 // current runtime values for GoVersion, Compiler, and Platform.
 // This is useful for testing without touching global state.
-func GetVersionInfoFrom(bi *debug.BuildInfo, options ...Option) *Info {
+func GetVersionInfoFrom(bi *debug.BuildInfo, linkOverride string, options ...Option) *Info {
 	moduleSum := unknown
 	if bi != nil {
 		moduleSum = cmp.Or(bi.Main.Sum, unknown)
 	}
 
 	i := Info{
-		GitVersion:   cmp.Or(getGitVersion(bi), "devel"),
+		GitVersion:   cmp.Or(getGitVersion(bi, linkOverride), "devel"),
 		ModuleSum:    moduleSum,
 		GitCommit:    cmp.Or(getCommit(bi), unknown),
 		GitTreeState: cmp.Or(getDirty(bi), unknown),

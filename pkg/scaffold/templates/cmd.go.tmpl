@@ -1,5 +1,8 @@
-// Package cmd is the dispatcher; it routes CLI arguments to the matching command.
+// Package cmd is the dispatcher for the APP_NAME CLI.
+// It registers all commands and routes incoming arguments
+// to the matching command implementation.
 package cmd
+
 // climax:name APP_NAME
 // climax:root-pkg ROOT_PKG
 
@@ -11,6 +14,7 @@ import (
 
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
+
 	"APP_IMPORT/cmd/ROOT_PKG"
 VERSION_IMPORT	// climax:imports
 )
@@ -22,7 +26,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 VERSION_CALL	// register new commands here
 
 	if err := r.Command.Parse(args); err != nil {
-		fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
+		_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
 		return fmt.Errorf("parse: %w", err)
 	}
 
@@ -31,7 +35,7 @@ VERSION_CALL	// register new commands here
 		// ExitError (command already reported its own outcome).
 		var exitErr ROOT_PKG.ExitError
 		if !errors.Is(err, ff.ErrNoExec) && !errors.As(err, &exitErr) {
-			fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
+			_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
 		}
 		return err
 	}

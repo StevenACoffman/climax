@@ -41,7 +41,7 @@ func TestGetVersionInfo_json(t *testing.T) {
 // TestGetVersionInfoFrom_nilBuildInfo verifies that a nil BuildInfo produces
 // a valid Info with default field values.
 func TestGetVersionInfoFrom_nilBuildInfo(t *testing.T) {
-	info := version.GetVersionInfoFrom(nil)
+	info := version.GetVersionInfoFrom(nil, "")
 	if info == nil {
 		t.Fatal("expected non-nil Info for nil BuildInfo")
 	}
@@ -56,66 +56,79 @@ func TestGetVersionInfoFrom_nilBuildInfo(t *testing.T) {
 // TestGetVersionInfoFrom_gitVersion tests version extraction from BuildInfo.
 func TestGetVersionInfoFrom_gitVersion(t *testing.T) {
 	cases := []struct {
+		name       string
 		rawVersion string
 		want       string
 	}{
-		{"(devel)", "devel"},
-		{"", "devel"},
-		{"v1.2.3", "v1.2.3"},
+		{"devel tag", "(devel)", "devel"},
+		{"empty version", "", "devel"},
+		{"semver tag", "v1.2.3", "v1.2.3"},
 	}
 	for _, tc := range cases {
-		info := version.GetVersionInfoFrom(&debug.BuildInfo{
-			Main: debug.Module{Version: tc.rawVersion},
+		t.Run(tc.name, func(t *testing.T) {
+			info := version.GetVersionInfoFrom(&debug.BuildInfo{
+				Main: debug.Module{Version: tc.rawVersion},
+			}, "")
+			if info.GitVersion != tc.want {
+				t.Errorf("got GitVersion %q, want %q", info.GitVersion, tc.want)
+			}
 		})
-		if info.GitVersion != tc.want {
-			t.Errorf("rawVersion=%q: got GitVersion %q, want %q",
-				tc.rawVersion, info.GitVersion, tc.want)
-		}
 	}
 }
 
 // TestGetVersionInfoFrom_gitTreeState tests dirty/clean detection.
 func TestGetVersionInfoFrom_gitTreeState(t *testing.T) {
 	cases := []struct {
+		name     string
 		modified string
 		want     string
 	}{
-		{"true", "dirty"},
-		{"false", "clean"},
-		{"", "unknown"},
+		{"modified true", "true", "dirty"},
+		{"modified false", "false", "clean"},
+		{"missing setting", "", "unknown"},
 	}
 	for _, tc := range cases {
-		settings := []debug.BuildSetting{}
-		if tc.modified != "" {
-			settings = append(settings, debug.BuildSetting{Key: "vcs.modified", Value: tc.modified})
-		}
-		info := version.GetVersionInfoFrom(&debug.BuildInfo{Settings: settings})
-		if info.GitTreeState != tc.want {
-			t.Errorf("vcs.modified=%q: got GitTreeState %q, want %q",
-				tc.modified, info.GitTreeState, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			settings := []debug.BuildSetting{}
+			if tc.modified != "" {
+				settings = append(
+					settings,
+					debug.BuildSetting{Key: "vcs.modified", Value: tc.modified},
+				)
+			}
+			info := version.GetVersionInfoFrom(&debug.BuildInfo{Settings: settings}, "")
+			if info.GitTreeState != tc.want {
+				t.Errorf("got GitTreeState %q, want %q", info.GitTreeState, tc.want)
+			}
+		})
 	}
 }
 
 // TestGetVersionInfoFrom_buildDate tests build date parsing.
 func TestGetVersionInfoFrom_buildDate(t *testing.T) {
 	cases := []struct {
+		name    string
 		vcsTime string
 		want    string
 	}{
-		{"", "unknown"},
-		{"not a date", "unknown"},
-		{"2024-01-15T10:30:00Z", "2024-01-15T10:30:00"},
+		{"missing setting", "", "unknown"},
+		{"invalid timestamp", "not a date", "unknown"},
+		{"valid RFC3339", "2024-01-15T10:30:00Z", "2024-01-15T10:30:00"},
 	}
 	for _, tc := range cases {
-		settings := []debug.BuildSetting{}
-		if tc.vcsTime != "" {
-			settings = append(settings, debug.BuildSetting{Key: "vcs.time", Value: tc.vcsTime})
-		}
-		info := version.GetVersionInfoFrom(&debug.BuildInfo{Settings: settings})
-		if info.BuildDate != tc.want {
-			t.Errorf("vcs.time=%q: got BuildDate %q, want %q", tc.vcsTime, info.BuildDate, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			settings := []debug.BuildSetting{}
+			if tc.vcsTime != "" {
+				settings = append(
+					settings,
+					debug.BuildSetting{Key: "vcs.time", Value: tc.vcsTime},
+				)
+			}
+			info := version.GetVersionInfoFrom(&debug.BuildInfo{Settings: settings}, "")
+			if info.BuildDate != tc.want {
+				t.Errorf("got BuildDate %q, want %q", info.BuildDate, tc.want)
+			}
+		})
 	}
 }
 
@@ -126,7 +139,7 @@ func TestGetVersionInfoFrom_gitCommit(t *testing.T) {
 		Settings: []debug.BuildSetting{
 			{Key: "vcs.revision", Value: sha},
 		},
-	})
+	}, "")
 	if info.GitCommit != sha {
 		t.Errorf("got GitCommit %q, want %q", info.GitCommit, sha)
 	}
@@ -135,7 +148,7 @@ func TestGetVersionInfoFrom_gitCommit(t *testing.T) {
 // TestGetVersionInfoFrom_options verifies that functional options are applied.
 func TestGetVersionInfoFrom_options(t *testing.T) {
 	const art = " _\n|_|\n"
-	info := version.GetVersionInfoFrom(nil,
+	info := version.GetVersionInfoFrom(nil, "",
 		version.WithBuiltBy("goreleaser"),
 		version.WithAppDetails("myapp", "a useful tool", "https://example.com"),
 		version.WithASCIIName(art),

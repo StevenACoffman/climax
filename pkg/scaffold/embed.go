@@ -16,3 +16,6 @@ var versionTemplate string
 
 //go:embed templates/newcmd.go.tmpl
 var newCmdTemplate string
+
+//go:embed templates/man.go.tmpl
+var manCmdTemplate string
