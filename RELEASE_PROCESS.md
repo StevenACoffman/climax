@@ -26,8 +26,8 @@ export GITHUB_TOKEN=<your-token>
 ### 1. Tag the release
 
 ```sh
-git tag -a v0.3.0 -m "Release v0.3.0"
-git push origin v0.3.0
+git tag -a v0.4.0 -m "Release v0.4.0"
+git push origin v0.4.0
 ```
 
 Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`.
