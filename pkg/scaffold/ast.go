@@ -24,6 +24,10 @@ type dispatcherInfo struct {
 	rootVar string // variable holding root Config in Run, e.g. "r"
 	cliName string // ff.Command.Name for root; "" means derive from import path
 
+	// envPrefix is the value from the climax:env-prefix marker, or "" when
+	// the marker is absent (meaning the app was inited with --no-env-prefix).
+	envPrefix string
+
 	markerBased bool // true when both text markers are present
 
 	// Populated only when !markerBased:
@@ -119,9 +123,10 @@ func analyzeDispatcher(dir string) (*dispatcherInfo, []byte, error) {
 
 	content := string(src)
 	info := &dispatcherInfo{
-		path:    path,
-		rootPkg: readMarker(content, "// climax:root-pkg"),
-		cliName: readMarker(content, "// climax:name"),
+		path:      path,
+		rootPkg:   readMarker(content, "// climax:root-pkg"),
+		cliName:   readMarker(content, "// climax:name"),
+		envPrefix: readMarker(content, "// climax:env-prefix"),
 	}
 	if info.rootPkg == "" {
 		info.rootPkg = "root"

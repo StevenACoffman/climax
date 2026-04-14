@@ -336,6 +336,7 @@ package cmd
 
 // climax:name <cli-name>
 // climax:root-pkg root
+// climax:env-prefix <CLI_NAME>
 
 import (
     "context"
@@ -352,12 +353,17 @@ import (
 
 // Run parses args and dispatches to the matching command.
 // args must not include the executable name (pass os.Args[1:]).
+//
+// Every flag can also be set via a <CLI_NAME>_-prefixed environment variable.
+// Mapping rule: prepend <CLI_NAME>_, uppercase, replace hyphens and dots with
+// underscores. Example: --output-dir → <CLI_NAME>_OUTPUT_DIR.
+// Flags on the command line always take precedence over env vars.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
     r := root.New(stdin, stdout, stderr)
     version.New(r)
     // register new commands here
 
-    if err := r.Command.Parse(args); err != nil {
+    if err := r.Command.Parse(args, ff.WithEnvVarPrefix("<CLI_NAME>")); err != nil {
         _, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
         return fmt.Errorf("parse: %w", err)
     }
@@ -450,6 +456,74 @@ func run(ctx context.Context) int {
 
 ______________________________________________________________________
 
+## No Package-Level Mutable State; No `init()` Functions
+
+Do not use package-level mutable variables. Do not use `init()` functions.
+
+Mutable globals make behaviour depend on which code ran first, cause tests to bleed state into one another, and introduce data races. `init()` adds a second hazard on top of that: it runs before any flag is parsed, its side effects cannot be suppressed in a test, and — because execution order is determined by the import graph — it is invisible to anyone reading `main`.
+
+Both rules are mechanically enforced: `gochecknoglobals` flags unexpected package-level vars; `gochecknoinits` rejects any `init()` function.
+
+### Where to initialize instead
+
+Use the most deferred option that covers the dependency's scope:
+
+1. **Inside `exec`** — resources needed by exactly one command. Runs only when that command is selected; never pays the cost otherwise.
+2. **Between `Parse()` and `Run()` in `cmd/cmd.go`** — shared dependencies (API clients, loggers, DB connections) that require a parsed flag value to construct.
+3. **In `New()` in `cmd/cmd.go`** — command registration and flag binding only. No I/O, no network, no filesystem.
+
+### Permitted exceptions
+
+The rule is not "no package-level vars" — it is "no *writeable* shared state." A package-level `var` is acceptable when the value is set once before the program's logic begins, is never reassigned, and cannot be expressed as a `const`, local variable, or constructor parameter. Five patterns meet this bar:
+
+**1. Sentinel errors**
+
+```go
+var ErrNotFound = errors.New("not found")
+```
+
+`errors.Is` works by pointer identity — it walks the error chain comparing pointers, not values. A freshly allocated error would never match a stored sentinel, so the sentinel must be a stable package-level pointer. The `reassign` linter enforces that it is never reassigned. The global is load-bearing for the API contract, not a source of mutable state.
+
+**2. Blank-identifier interface assertions**
+
+```go
+var _ SomeInterface = (*MyType)(nil)
+```
+
+`_` has no storage and cannot be read or written. This is a compile-time check: the build fails if `*MyType` ever drifts out of conformance with `SomeInterface`. `gochecknoglobals` correctly ignores it because it holds no runtime state.
+
+**3. Link-time version injection**
+
+```go
+// Override at build time: go build -ldflags "-X <pkg>.Version=1.2.3"
+var Version = "dev"
+```
+
+The linker's `-ldflags "-X <pkg>.Version=<val>"` writes directly into the symbol table. Neither a `const` nor a local variable has a symbol the linker can target. The variable is read-only at runtime — nothing in the program reassigns it — but the language has no way to express that as a `const`. This is the **one sanctioned mutable global in a climax command**.
+
+**4. Pre-compiled regular expressions**
+
+```go
+var nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+```
+
+`*regexp.Regexp` is goroutine-safe after construction, so one instance can be shared across all callers without synchronization. Because compiling a pattern is expensive relative to matching, the standard Go idiom is to compile once at startup and reuse the result indefinitely. `MustCompile` rather than `Compile` is deliberate: a bad pattern panics immediately at startup rather than returning an error silently on the first production call.
+
+**5. Embedded files**
+
+```go
+//go:embed template.tmpl
+var tmpl string
+```
+
+The compiler resolves `//go:embed` at build time and writes file contents into the variable before `main` runs. The result is backed by static binary data and is never modified at runtime — effectively a read-only constant. The Go specification requires the directive to appear immediately above a package-level `var`; it cannot appear inside a function.
+
+### The unifying principle
+
+All five are cases where the language cannot express a constant as a `const`. Every one is set before the program's logic begins and never changes afterward. They are not loopholes — they are the precise boundary of "no *writeable* shared state."
+
+______________________________________________________________________
+
 ## Post-Parse Initialization
 
 Because `ff` separates `Parse()` from `Run()`, dependencies that require parsed
@@ -486,13 +560,15 @@ inside an existing Go module. Generated files, in order:
 3. `cmd/<root-pkg>/<root-pkg>.go`
 4. `cmd/version/version.go` (unless `--no-version`)
 
-| Flag           | Default                        | Description                                                   |
-| -------------- | ------------------------------ | ------------------------------------------------------------- |
-| `--name`       | last import path segment       | `ff.Command.Name` for the root command (allows hyphens)       |
-| `--short`      | `"TODO: describe <name> here"` | `ff.Command.ShortHelp` for the root command                   |
-| `--long`       | _(omitted)_                    | `ff.Command.LongHelp` for the root command                    |
-| `--root-pkg`   | `root`                         | Go package name and file basename for the root config package |
-| `--no-version` | false                          | Skip generating `cmd/version/version.go`                      |
+| Flag             | Default                                        | Description                                                                                        |
+| ---------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `--name`         | last import path segment                       | `ff.Command.Name` for the root command (allows hyphens)                                            |
+| `--short`        | `"TODO: describe <name> here"`                 | `ff.Command.ShortHelp` for the root command                                                        |
+| `--long`         | _(omitted)_                                    | `ff.Command.LongHelp` for the root command                                                         |
+| `--root-pkg`     | `root`                                         | Go package name and file basename for the root config package                                      |
+| `--no-version`   | false                                          | Skip generating `cmd/version/version.go`                                                           |
+| `--env-prefix`   | `--name` uppercased, hyphens → underscores     | Prefix for environment variable names, passed to `ff.WithEnvVarPrefix`. Mutually exclusive with `--no-env-prefix`. |
+| `--no-env-prefix`| false                                          | Use `ff.WithEnvVars()` instead — env vars enabled without an application prefix. Mutually exclusive with `--env-prefix`. |
 
 Output:
 
@@ -535,16 +611,24 @@ added command "serve"
 
 ### Persistence markers
 
-`climax init` writes two marker comments to the dispatcher that carry values
-needed by subsequent `climax add` runs:
+`climax init` writes three marker comments to the dispatcher that carry values
+needed by subsequent tool runs:
 
 ```go
-// climax:name <cli-name>   // ff.Command.Name used for the root command
-// climax:root-pkg <pkg>    // root config package name (default: root)
+// climax:name <cli-name>      // ff.Command.Name used for the root command
+// climax:root-pkg <pkg>       // root config package name (default: root)
+// climax:env-prefix <PREFIX>  // env var prefix; absent when --no-env-prefix was used
 ```
 
-When both markers are present, `climax add` uses text insertion at the marker
-positions. When one or both are absent, it falls back to full AST analysis of
+`climax:env-prefix` is present and holds the prefix string when env vars are
+prefixed (the default). It is **absent — not present at all** — when `--no-env-prefix`
+was passed at init time, which causes the generated code to use `ff.WithEnvVars()`
+instead. The marker records the env-var configuration for human reference and
+future tooling; it is read by `analyzeDispatcher` and exposed on the dispatcher
+info struct, but is not currently acted on by `climax lint` or `climax update`.
+
+When all three markers are present, `climax add` uses text insertion at the marker
+positions. When one or more are absent, it falls back to full AST analysis of
 the dispatcher to determine insertion points — which requires that the file still
 has a parenthesized import block, a top-level `func Run`, a root assignment
 (`r := root.New(...)`), and a `r.Command.Parse(...)` call.
@@ -596,7 +680,7 @@ Fifteen structural properties are checked independently (vs. three groups in `li
 | File | Properties |
 |---|---|
 | `main.go` | `signal.NotifyContext`, `run()` separation, `os.Stdin` passed to `cmd.Run` |
-| `cmd/cmd.go` | `stdin io.Reader` parameter in `Run`, `stdin` forwarded to `root.New` |
+| `cmd/cmd.go` | `stdin io.Reader` parameter in `Run`, `stdin` forwarded to `root.New`, env var option in `r.Command.Parse` (`ff.WithEnvVarPrefix` vs `ff.WithEnvVars`) |
 | `cmd/root/root.go` | `Stdin io.Reader` field, `stdin io.Reader` parameter in `New`, `cfg.Stdin = stdin` assignment |
 | `cmd/version/version.go` | `JSON` flag in `Config`, tabwriter output, `GetVersionInfoFrom` function, `Info` methods use pointer receivers, `Option` type, `With*` constructors |
 | `cmd/mango/mango.go` | `Section int` field in `Config` |
@@ -654,8 +738,8 @@ ______________________________________________________________________
 | Every configurable knob is a registered flag | Hard-coded values and out-of-band `os.Getenv` calls silently break `-h` discoverability and make the configuration surface invisible to operators |
 | Use `ff`; no other CLI frameworks | `ff` provides flags, subcommand dispatch, and help with minimal surface area |
 | No `Commander` interface | Go composition via `Exec` function pointer is sufficient |
-| No `init()` functions | `init()` runs unconditionally at startup before flag parsing, its side effects cannot be suppressed in tests, and execution order across packages is implicit; use `New()` in `cmd/cmd.go` for registration and initialize resources inside `exec` when they are needed |
-| No package-level mutable variables, **except** `var Version = "dev"` in `cmd/version/` | `go build -ldflags "-X <pkg>.Version=<val>"` can only override a `var` — `const` and local variables are link-time immutable; this is the one sanctioned global in a climax command |
+| No `init()` functions | `init()` runs unconditionally before flag parsing; effects cannot be suppressed in tests; execution order across packages is implicit. Register commands via `New()` in `cmd/cmd.go`; initialize resources inside `exec` when actually needed. See "No Package-Level Mutable State; No `init()` Functions" |
+| No package-level mutable variables (five narrow exceptions apply) | Writeable globals cause data races, test pollution, and hidden coupling. Permitted exceptions: sentinel errors, blank-identifier interface assertions, `var Version = "dev"`, pre-compiled `regexp.MustCompile(...)`, and `//go:embed` declarations. See "No Package-Level Mutable State; No `init()` Functions" |
 | Config struct per command | Carries parsed flag values and inherited I/O; avoids global state |
 | Flag values bound in `New()`, not in `exec` | Flags are parsed before `exec` is called; binding in `exec` is too late |
 | `SetParent` on every subcommand flag set | Allows parent flags to be accepted at any subcommand depth |

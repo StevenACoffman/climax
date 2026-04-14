@@ -62,11 +62,17 @@ func New(parent *root.Config) *Config {
 		Name:      "add",
 		Usage:     "climax add [FLAGS] <name> [path]",
 		ShortHelp: "add a new command to a climax application",
-		LongHelp: "Add (climax add [FLAGS] <name> [path]) creates a new command package at " +
-			"cmd/<name>/<name>.go inside the Climax application rooted at path " +
-			"(default: current directory) and registers it in cmd/cmd.go. " +
-			"The path must be inside an existing Go module and must be the root " +
-			"of an application previously created by 'climax init'.",
+		LongHelp: `Add creates a new command package at cmd/<name>/<name>.go inside the Climax
+application rooted at path (default: current directory) and registers it in
+cmd/cmd.go. The path must be inside an existing Go module and must be the root
+of an application previously created by 'climax init'.
+
+Environment variable overrides (CLIMAX_ prefix):
+
+  CLIMAX_NAME    --name
+  CLIMAX_SHORT   --short
+  CLIMAX_LONG    --long
+  CLIMAX_PARENT  --parent`,
 		Flags: cfg.Flags,
 		Exec:  cfg.exec,
 	}

@@ -59,7 +59,8 @@ File mapping (source → template):
 Structural properties checked:
 
   main      signal.NotifyContext, run() separation, os.Stdin passed to cmd.Run
-  cmd       stdin io.Reader parameter in Run, stdin forwarded to root.New
+  cmd       stdin io.Reader parameter in Run, stdin forwarded to root.New,
+            ff.WithEnvVarPrefix in Parse call
   root      Stdin io.Reader field, stdin parameter in New, cfg.Stdin assignment
   version   JSON flag in Config, tabwriter output, GetVersionInfoFrom function,
             Info methods pointer receivers, Option type, With* constructors
@@ -73,7 +74,11 @@ Items where the template has a property but the source does not are reported
 but not auto-fixed, as removing things from templates is a manual decision.
 
 The path argument defaults to the current directory, which must be the climax
-module root (directory containing go.mod with module github.com/StevenACoffman/climax).`,
+module root (directory containing go.mod with module github.com/StevenACoffman/climax).
+
+Environment variable overrides (CLIMAX_ prefix):
+
+  CLIMAX_APPLY  --apply`,
 		Flags: cfg.Flags,
 		Exec:  cfg.exec,
 	}

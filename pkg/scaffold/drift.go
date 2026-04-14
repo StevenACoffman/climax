@@ -57,6 +57,7 @@ type sourceInfo struct {
 	// cmd/cmd.go properties
 	cmdHasStdinParam bool
 	cmdPassesStdin   bool
+	cmdHasEnvPrefix  bool
 	// cmd/root/root.go properties
 	rootHasStdinField bool
 	rootHasStdinParam bool
@@ -147,6 +148,7 @@ func DetectDrift(climaxDir string) ([]DriftItem, error) {
 			"New",
 			"stdin",
 		),
+		cmdHasEnvPrefix:    astHasCall(cmdFile, "Run", "WithEnvVarPrefix"),
 		rootHasStdinField:  astStructHasField(rootFile, "Config", "Stdin"),
 		rootHasStdinParam:  astFuncHasIOReaderParam(rootFile, "New"),
 		rootAssignsStdin:   astFuncAssignsField(rootFile, "New", "Stdin"),
@@ -323,6 +325,21 @@ func run(ctx context.Context) int {
 					{
 						"r := ROOT_PKG.New(stdout, stderr)",
 						"r := ROOT_PKG.New(stdin, stdout, stderr)",
+					},
+				},
+			},
+		},
+		{
+			tmpl:   "cmd",
+			prop:   "ff.WithEnvVarPrefix in Parse call",
+			inSrc:  src.cmdHasEnvPrefix,
+			inTmpl: strings.Contains(tmpl.cmd, "ff.WithEnvVarPrefix("),
+			patch: &templatePatch{
+				templateFile: "cmd.go.tmpl",
+				replacements: []replacePair{
+					{
+						"r.Command.Parse(args)",
+						`r.Command.Parse(args, ff.WithEnvVarPrefix("APP_ENV_PREFIX"))`,
 					},
 				},
 			},

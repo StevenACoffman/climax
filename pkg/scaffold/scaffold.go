@@ -32,7 +32,14 @@ type InitOptions struct {
 	Short        string // ff.Command.ShortHelp for the root; defaults to "TODO: describe <name> here"
 	Long         string // ff.Command.LongHelp for the root; omitted if empty
 	RootPkg      string // Go package name (and file basename) for the root config; defaults to "root"
-	NoVersion    bool   // when true, skip generating cmd/version/version.go
+	EnvPrefix    string // env var prefix for ff.WithEnvVarPrefix; defaults to NormalizeEnvPrefix(Name)
+	// NoEnvPrefix selects ff.WithEnvVars() (no prefix) over ff.WithEnvVarPrefix.
+	// When true, EnvPrefix is still normalized and used to rewrite the generated
+	// content, but the resulting file omits the prefix from both the Parse call
+	// and the climax:env-prefix marker. Mutually exclusive with a non-empty EnvPrefix
+	// at the CLI layer; both may be set here (EnvPrefix is ignored in the output).
+	NoEnvPrefix bool
+	NoVersion   bool // when true, skip generating cmd/version/version.go
 }
 
 // InitApp writes a complete Climax application scaffold to dir and returns
@@ -52,6 +59,13 @@ func InitApp(dir string, opts InitOptions) ([]string, error) {
 	if opts.Short == "" {
 		opts.Short = "TODO: describe " + opts.Name + " here"
 	}
+	if opts.EnvPrefix == "" {
+		opts.EnvPrefix = opts.Name
+	}
+	opts.EnvPrefix = NormalizeEnvPrefix(opts.EnvPrefix)
+	if opts.EnvPrefix == "" {
+		opts.EnvPrefix = "APP"
+	}
 
 	// Build conditional template fragments.
 	longHelpLine := ""
@@ -68,6 +82,7 @@ func InitApp(dir string, opts InitOptions) ([]string, error) {
 	vars := map[string]string{
 		"APP_IMPORT":     opts.ImportPrefix,
 		"APP_NAME":       opts.Name,
+		"APP_ENV_PREFIX": opts.EnvPrefix,
 		"ROOT_PKG":       opts.RootPkg,
 		"APP_SHORT":      goStringContent(opts.Short),
 		"LONG_HELP_LINE": longHelpLine,
@@ -91,9 +106,13 @@ func InitApp(dir string, opts InitOptions) ([]string, error) {
 		})
 	}
 
+	cmdRel := filepath.Join("cmd", "cmd.go")
 	var written []string
 	for _, f := range files {
 		content := applyVars(f.tmpl, vars)
+		if opts.NoEnvPrefix && f.rel == cmdRel {
+			content = applyNoEnvPrefix(content, opts.EnvPrefix)
+		}
 		if err := writeFile(filepath.Join(dir, f.rel), content); err != nil {
 			return nil, err
 		}
@@ -487,6 +506,31 @@ func ValidateIdent(name string) error {
 	return nil
 }
 
+// NormalizeEnvPrefix derives a valid environment-variable prefix from name.
+// It uppercases all ASCII letters, replaces hyphens and periods with
+// underscores, and drops all other non-ASCII and non-alphanumeric characters.
+//
+// Examples:
+//
+//	"myapp"   → "MYAPP"
+//	"my-app"  → "MY_APP"
+//	"my.app"  → "MY_APP"
+//	"café"    → "CAF"   (non-ASCII é dropped)
+func NormalizeEnvPrefix(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r == '-' || r == '.':
+			b.WriteRune('_')
+		case r == '_' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z'):
+			b.WriteRune(r)
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(unicode.ToUpper(r))
+		}
+	}
+	return b.String()
+}
+
 func titleCase(s string) string {
 	if s == "" {
 		return s
@@ -494,6 +538,34 @@ func titleCase(s string) string {
 	r := []rune(s)
 	r[0] = unicode.ToUpper(r[0])
 	return string(r)
+}
+
+// applyNoEnvPrefix rewrites generated cmd.go content to use ff.WithEnvVars()
+// (no prefix) instead of ff.WithEnvVarPrefix("PREFIX"). It:
+//   - removes the climax:env-prefix marker line
+//   - replaces the three-line prefix-specific doc comment with a two-line
+//     no-prefix equivalent
+//   - replaces ff.WithEnvVarPrefix("PREFIX") with ff.WithEnvVars()
+//
+// normalizedPrefix must be the already-normalized value used during template
+// expansion (opts.EnvPrefix after InitApp fills defaults and calls NormalizeEnvPrefix).
+func applyNoEnvPrefix(content, normalizedPrefix string) string {
+	// Remove the climax:env-prefix marker line.
+	content = strings.Replace(content,
+		"\n// climax:env-prefix "+normalizedPrefix, "", 1)
+	// Replace the three-line prefix-specific doc comment.
+	oldComment := "// Every flag can be set via a " + normalizedPrefix + "_-prefixed environment variable.\n" +
+		"// The mapping rule is: prepend " + normalizedPrefix + "_, uppercase, replace dashes with\n" +
+		"// underscores."
+	newComment := "// Every flag can be set via an environment variable with the same name,\n" +
+		"// uppercased with dashes and dots replaced by underscores (--log-level → LOG_LEVEL)."
+	content = strings.Replace(content, oldComment, newComment, 1)
+	// Replace the WithEnvVarPrefix Parse option with WithEnvVars.
+	content = strings.Replace(content,
+		`ff.WithEnvVarPrefix("`+normalizedPrefix+`")`,
+		"ff.WithEnvVars()",
+		1)
+	return content
 }
 
 // goStringContent returns s escaped for use as the content of a Go interpreted

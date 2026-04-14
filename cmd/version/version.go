@@ -242,7 +242,11 @@ Fields shown:
   ModuleSum     go.sum checksum of the main module
   Platform      GOOS/GOARCH pair (e.g. darwin/arm64)
 
-Use --json to get machine-readable output suitable for scripting.`,
+Use --json to get machine-readable output suitable for scripting.
+
+Environment variable overrides (CLIMAX_ prefix):
+
+  CLIMAX_JSON  --json`,
 		Flags: cfg.Flags,
 		Exec:  cfg.exec,
 	}

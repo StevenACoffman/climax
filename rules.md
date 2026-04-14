@@ -17,8 +17,7 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not put domain types in subpackages — they belong in the root package.
 - Do not group packages by type (`models/`, `controllers/`, `handlers/`) — group by dependency instead.
 - Do not allow the root package to import any other package in the application.
-- Do not use global variables for application state (DB connections, config, etc.).
-  - **Exception:** `var Version = "dev"` in `cmd/version/` is permitted. The Go linker's `-ldflags "-X <pkg>.Version=<val>"` can only override a package-level `var` — a `const` or local variable cannot be set at link time. This is the only mutable global allowed in a command package.
+- Do not use package-level mutable variables for application state (DB connections, config, etc.). Writeable globals cause data races, test pollution, and hidden coupling. Five narrow patterns are permitted — see "Permitted Package-Level Variables" below.
 - Do not put business logic in `main` — it only wires dependencies.
 - Do not put the `main` package in the project root — put binaries under `cmd/`.
 - Do not enforce authorization in HTTP handlers or middleware — enforce it in service implementations, embedded in SQL where possible.
@@ -29,7 +28,7 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not use other CLI frameworks (cobra, urfave/cli, etc.). Use `github.com/peterbourgon/ff/v4`.
 - Do not use interfaces for command polymorphism. Use the `ff.Command` struct with the Config struct pattern.
 - Do not call `Parse`, `Run`, or any other method on `ff.Command` from command packages. Those are called by the dispatcher in `cmd/cmd.go`.
-- Do not use `init()` functions. `init()` runs unconditionally at startup before flag parsing, its effects cannot be suppressed in tests, and execution order across packages is implicit. Call `New()` in `cmd/cmd.go` for registration; initialize resources inside `exec` when they are actually needed (e.g. read build info in the version command's `exec`, not at program startup).
+- Do not use `init()` functions (`gochecknoinits`). `init()` runs before flags are parsed; its effects cannot be suppressed in tests; its execution order across packages is determined by the import graph, not the call site. Register commands via `New()`; initialize resources inside `exec` when actually needed.
 - Do not bind flag values inside `exec`. Bind them in `New()` — they are already parsed before `exec` is called.
 - Do not call `os.Exit` inside a command. Return errors or `root.ExitError`; only `run()` in `main.go` controls exit codes.
 - Do not use `os.Stdout` / `os.Stderr` directly. Write to `cfg.Stdout` / `cfg.Stderr` (from `root.Config`).
@@ -66,6 +65,56 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not mock `net.Conn` — make real network connections.
 - Do not test unexported functions as the primary testing strategy.
 - Do not write unit tests that duplicate assertions already covered by an end-to-end test.
+
+______________________________________________________________________
+
+## Permitted Package-Level Variables
+
+The rule is not "no package-level vars" — it is "no vars whose value changes after the program starts." A package-level `var` is acceptable when the value is set once before the program's logic begins, is never reassigned, and cannot be expressed as a `const`, local variable, or constructor parameter. Five patterns meet this bar:
+
+**Sentinel errors**
+
+```go
+var ErrNotFound = errors.New("not found")
+```
+
+`errors.Is` works by pointer identity — it walks the error chain comparing pointers, not values. A freshly allocated error would never match a stored sentinel, so the sentinel must be a stable package-level pointer. The `reassign` linter enforces that it is never reassigned. The global is load-bearing for the API contract, not a source of mutable state.
+
+**Blank-identifier interface assertions**
+
+```go
+var _ SomeInterface = (*MyType)(nil)
+```
+
+`_` has no storage and cannot be read or written. This is a compile-time assertion: the build fails if `*MyType` ever drifts out of conformance with `SomeInterface`. `gochecknoglobals` correctly ignores it because it holds no runtime state.
+
+**Link-time version injection**
+
+```go
+// Override at build time: go build -ldflags "-X <pkg>.Version=1.2.3"
+var Version = "dev"
+```
+
+The Go linker's `-ldflags "-X <pkg>.Version=<val>"` mechanism writes directly into the symbol table. Neither a `const` nor a local variable has a symbol the linker can target. The variable is read-only at runtime — nothing in the program reassigns it — but the language cannot express that constraint as a `const`. This is the **one sanctioned mutable global in a command package**.
+
+**Pre-compiled regular expressions**
+
+```go
+var nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+```
+
+`*regexp.Regexp` is goroutine-safe after construction, so one instance can be shared across all callers without synchronization. Because compiling a pattern is expensive relative to matching, the standard Go idiom is to compile once at startup and reuse the result indefinitely. `MustCompile` rather than `Compile` is deliberate: a bad pattern panics immediately at startup rather than returning an error silently on the first production call.
+
+**Embedded files**
+
+```go
+//go:embed template.tmpl
+var tmpl string
+```
+
+The compiler resolves `//go:embed` at build time and writes file contents into the variable before `main` runs. The result is backed by static binary data and is never modified at runtime — effectively a read-only constant. The Go specification requires the directive to appear immediately above a package-level `var`; it cannot appear inside a function.
+
+All five are cases where the language cannot express a constant as a `const`. Every one is set before the program's logic begins and never changes afterward. They are not loopholes — they are the precise boundary of "no *writeable* shared state."
 
 ______________________________________________________________________
 
@@ -747,8 +796,8 @@ func run(ctx context.Context) int {
 | Every configurable knob is a registered flag | Hard-coded values and out-of-band `os.Getenv` calls silently break `-h` discoverability and make the configuration surface invisible to operators |
 | Use `ff`; no other CLI frameworks           | `ff` provides flags, subcommand dispatch, and help with minimal surface area  |
 | No Commander interface                      | Go composition via `Exec` function pointer is sufficient                      |
-| No `init()` functions                       | `init()` runs at startup before flag parsing, cannot be suppressed in tests, and has implicit ordering; register commands in `New()` and initialize resources inside `exec` when needed |
-| No package-level mutable state, **except** `var Version = "dev"` | `-ldflags "-X <pkg>.Version=<val>"` can only override a `var`; `const` and local variables are link-time immutable — this is the one permitted global in a command package |
+| No `init()` functions                       | Runs before flags are parsed; effects cannot be suppressed in tests; execution order across packages is implicit. Register via `New()` in `cmd/cmd.go`; initialize inside `exec` when actually needed |
+| No package-level mutable variables (five narrow exceptions apply) | Writeable globals cause data races, test pollution, and hidden coupling. Permitted: sentinel errors, blank-identifier assertions, `var Version = "dev"`, `regexp.MustCompile(...)`, `//go:embed`. See the "Do Not" section for full details |
 | Config struct per command                   | Carries parsed flag values and inherited I/O; avoids global state             |
 | Flag values bound in `New()`, not in `exec` | Flags are parsed before `exec` is called; binding in `exec` is too late       |
 | `SetParent` on every subcommand flag set    | Allows parent flags (e.g. `--verbose`) to be accepted at any subcommand level |

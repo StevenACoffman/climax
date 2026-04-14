@@ -26,6 +26,12 @@ import (
 
 // Run parses args and dispatches to the matching command.
 // args must not include the executable name (pass os.Args[1:]).
+//
+// Every flag can be set via a CLIMAX_-prefixed environment variable.
+// The mapping rule is: prepend CLIMAX_, uppercase, replace dashes with
+// underscores. All flags are subcommand-specific; see each subcommand's --help
+//
+// Flags supplied on the command line always take precedence over env vars.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	r := root.New(stdin, stdout, stderr)
 	version.New(r)
@@ -36,7 +42,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	mango.New(r)
 	// register new commands here
 
-	if err := r.Command.Parse(args); err != nil {
+	if err := r.Command.Parse(args, ff.WithEnvVarPrefix("CLIMAX")); err != nil {
 		_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
 		return fmt.Errorf("parse: %w", err)
 	}

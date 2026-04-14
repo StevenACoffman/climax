@@ -256,6 +256,7 @@ func parsedSourceFromTemplate(
 	defaults := map[string]string{
 		"APP_IMPORT":        "example.com/app",
 		"APP_NAME":          "app",
+		"APP_ENV_PREFIX":    "APP",
 		"APP_SHORT":         "an application",
 		"ROOT_PKG":          "root",
 		"LONG_HELP_LINE":    "",

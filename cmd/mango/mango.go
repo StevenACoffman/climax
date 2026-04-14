@@ -65,7 +65,13 @@ After running climax mango, add the required dependencies to the target app:
 Then build and use the man page:
 
   myapp man              # print roff to stdout
-  myapp man | man -l -   # view in the man pager`,
+  myapp man | man -l -   # view in the man pager
+
+Environment variable overrides (CLIMAX_ prefix):
+
+  CLIMAX_SECTION    --section
+  CLIMAX_AUTHORS    --authors
+  CLIMAX_COPYRIGHT  --copyright`,
 		Flags: cfg.Flags,
 		Exec:  cfg.exec,
 	}

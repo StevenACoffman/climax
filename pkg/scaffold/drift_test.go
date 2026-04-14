@@ -75,6 +75,7 @@ func syntheticSourceInfoAllPresent() sourceInfo {
 		mainPassesStdin:                      true,
 		cmdHasStdinParam:                     true,
 		cmdPassesStdin:                       true,
+		cmdHasEnvPrefix:                      true,
 		rootHasStdinField:                    true,
 		rootHasStdinParam:                    true,
 		rootAssignsStdin:                     true,
