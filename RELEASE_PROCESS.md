@@ -26,8 +26,8 @@ export GITHUB_TOKEN=<your-token>
 ### 1. Tag the release
 
 ```sh
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin v0.1.0
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin v0.3.0
 ```
 
 Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`.
@@ -79,7 +79,7 @@ go install github.com/StevenACoffman/gowheels@latest
 ### Build wheels locally (no upload)
 
 ```sh
-gowheels pypi --name climax --repo StevenACoffman/climax
+gowheels pypi --package-name climaxgo --name goclimax --repo StevenACoffman/climax
 ```
 
 Wheels are written to `./dist/`. Inspect them before uploading.
@@ -90,7 +90,7 @@ Wheels are written to `./dist/`. Inspect them before uploading.
 export GOWHEELS_GITHUB_TOKEN=<your-token>    # read as --github-token; avoids GitHub API rate limits
 export GOWHEELS_PYPI_TOKEN=<your-pypi-token> # read as --pypi-token; authenticates the upload
 
-gowheels pypi --name climax --repo StevenACoffman/climax --upload
+gowheels pypi --name climax --package-name climaxgo --repo StevenACoffman/climax --upload
 ```
 
 `GOWHEELS_GITHUB_TOKEN` and `GOWHEELS_PYPI_TOKEN` are read automatically from the environment — no `--github-token` or `--pypi-token` flags are needed when they are set. `gowheels pypi` fetches the release assets from GitHub, extracts the binary from each archive, wraps it in a platform-specific wheel, and uploads each wheel to PyPI.

@@ -10,6 +10,19 @@ Climax generates the boilerplate for a structured, idiomatic CLI: one package pe
 go install github.com/StevenACoffman/climax@latest
 ```
 
+Or, if you have [uv](https://docs.astral.sh/uv/) installed, run climax without a separate Go toolchain:
+
+```sh
+uvx --from climaxgo climax
+```
+
+To install it persistently as a uv tool:
+
+```sh
+uv tool install climaxgo
+climax init
+```
+
 ## Quick start
 
 ```sh

@@ -27,6 +27,6 @@ jobs:
         run: go install github.com/StevenACoffman/gowheels@main
 
       - name: Build wheels and publish to PyPI
-        run: gowheels pypi --name climax --repo ${{ github.repository }} --upload
+        run: gowheels pypi --name climax --package-name climaxgo --repo ${{ github.repository }} --upload
         env:
           GOWHEELS_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
