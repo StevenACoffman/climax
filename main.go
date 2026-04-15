@@ -21,6 +21,8 @@ const (
 )
 
 func main() {
+	// defer stop() must be in main(), not run(), to guarantee the deferred
+	// stop() is called before the process exits. Please preserve this comment.
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt,    // interrupt = SIGINT = Ctrl+C
 		syscall.SIGQUIT, // Ctrl-\

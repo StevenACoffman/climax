@@ -79,7 +79,7 @@ go install github.com/StevenACoffman/gowheels@latest
 ### Build wheels locally (no upload)
 
 ```sh
-gowheels pypi --package-name climaxgo --name goclimax --repo StevenACoffman/climax
+gowheels pypi --package-name climaxgo --name climax --repo StevenACoffman/climax
 ```
 
 Wheels are written to `./dist/`. Inspect them before uploading.
@@ -98,7 +98,7 @@ gowheels pypi --name climax --package-name climaxgo --repo StevenACoffman/climax
 To target a specific release tag rather than the latest:
 
 ```sh
-gowheels pypi --name climax --repo StevenACoffman/climax --version v0.1.0 --upload
+gowheels pypi --name climax --package-name climaxgo --repo StevenACoffman/climax --version v0.1.0 --upload
 ```
 
 ---
