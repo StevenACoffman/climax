@@ -26,8 +26,8 @@ export GITHUB_TOKEN=<your-token>
 ### 1. Tag the release
 
 ```sh
-git tag -a v0.4.0 -m "Release v0.4.0"
-git push origin v0.4.0
+git tag -a v0.6.0 -m "Release v0.6.0"
+git push origin v0.6.0
 ```
 
 Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`.
@@ -98,7 +98,7 @@ gowheels pypi --name climax --package-name climaxgo --repo StevenACoffman/climax
 To target a specific release tag rather than the latest:
 
 ```sh
-gowheels pypi --name climax --package-name climaxgo --repo StevenACoffman/climax --version v0.1.0 --upload
+gowheels pypi --name climax --package-name climaxgo --repo StevenACoffman/climax --version v0.6.0 --upload
 ```
 
 ---
