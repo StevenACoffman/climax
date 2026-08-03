@@ -47,6 +47,16 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return fmt.Errorf("parse: %w", err)
 	}
 
+	// An unmatched token leaves the selected command a group parent (Exec == nil)
+	// with a leftover positional. Without this guard it falls through to Run,
+	// returns ff.ErrNoExec, and exits 0 — indistinguishable from a bare invocation.
+	if sel := r.Command.GetSelected(); sel.Exec == nil {
+		if rest := sel.Flags.GetArgs(); len(rest) > 0 {
+			_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(sel))
+			return fmt.Errorf("%s: unknown subcommand %q", sel.Name, rest[0])
+		}
+	}
+
 	if err := r.Command.Run(ctx); err != nil {
 		// Don't print usage help for ErrNoExec (no subcommand given) or
 		// ExitError (command already reported its own outcome).

@@ -18,6 +18,21 @@ import (
 	"strings"
 )
 
+// guardBlockInsertion is the unmatched-subcommand guard plus the following
+// r.Command.Run line, exactly as written into cmd.go.tmpl. It is the
+// replacement text of the guard drift patch; keeping it here (rather than
+// inline in runChecks) keeps that function within its maintainability budget.
+const guardBlockInsertion = "\n\t// An unmatched token leaves the selected command a group parent (Exec == nil)\n" +
+	"\t// with a leftover positional. Without this guard it falls through to Run,\n" +
+	"\t// returns ff.ErrNoExec, and exits 0 — indistinguishable from a bare invocation.\n" +
+	"\tif sel := r.Command.GetSelected(); sel.Exec == nil {\n" +
+	"\t\tif rest := sel.Flags.GetArgs(); len(rest) > 0 {\n" +
+	"\t\t\t_, _ = fmt.Fprintf(stderr, \"\\n%s\\n\", ffhelp.Command(sel))\n" +
+	"\t\t\treturn fmt.Errorf(\"%s: unknown subcommand %q\", sel.Name, rest[0])\n" +
+	"\t\t}\n" +
+	"\t}\n" +
+	"\n\tif err := r.Command.Run(ctx); err != nil {"
+
 // DriftItem describes a single structural difference between a climax source
 // file and the corresponding scaffold template.
 type DriftItem struct {
@@ -58,6 +73,7 @@ type sourceInfo struct {
 	cmdHasStdinParam bool
 	cmdPassesStdin   bool
 	cmdHasEnvPrefix  bool
+	cmdHasGuard      bool
 	// cmd/root/root.go properties
 	rootHasStdinField bool
 	rootHasStdinParam bool
@@ -149,6 +165,7 @@ func DetectDrift(climaxDir string) ([]DriftItem, error) {
 			"stdin",
 		),
 		cmdHasEnvPrefix:    astHasCall(cmdFile, "Run", "WithEnvVarPrefix"),
+		cmdHasGuard:        astHasCall(cmdFile, "Run", "GetArgs"),
 		rootHasStdinField:  astStructHasField(rootFile, "Config", "Stdin"),
 		rootHasStdinParam:  astFuncHasIOReaderParam(rootFile, "New"),
 		rootAssignsStdin:   astFuncAssignsField(rootFile, "New", "Stdin"),
@@ -341,6 +358,18 @@ func run(ctx context.Context) int {
 						"r.Command.Parse(args)",
 						`r.Command.Parse(args, ff.WithEnvVarPrefix("APP_ENV_PREFIX"))`,
 					},
+				},
+			},
+		},
+		{
+			tmpl:   "cmd",
+			prop:   "unmatched-subcommand guard",
+			inSrc:  src.cmdHasGuard,
+			inTmpl: strings.Contains(tmpl.cmd, "unknown subcommand"),
+			patch: &templatePatch{
+				templateFile: "cmd.go.tmpl",
+				replacements: []replacePair{
+					{"\n\tif err := r.Command.Run(ctx); err != nil {", guardBlockInsertion},
 				},
 			},
 		},
