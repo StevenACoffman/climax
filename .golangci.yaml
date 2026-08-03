@@ -119,6 +119,7 @@ linters:
         - io.WriteString
         - fmt.Fprintln
         - fmt.Fprint
+        - fmt.FprintF
 
     # ── errorlint ────────────────────────────────────────────────────────────
     # rules.md: never type-assert on errors directly; always use errors.Is /
