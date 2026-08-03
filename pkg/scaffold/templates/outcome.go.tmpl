@@ -1,0 +1,59 @@
+// outcome.go provides a generic JSONL result envelope for the ROOT_PKG package.
+// The envelope carries no domain vocabulary: the app supplies its own Reason
+// tokens and specializes CodeForError to read its error taxonomy.
+
+package ROOT_PKG
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+// Status values for Outcome.Status.
+const (
+	StatusOK      = "ok"
+	StatusBlocked = "blocked"
+	StatusError   = "error"
+)
+
+// Outcome is a generic machine-readable result envelope, written as one JSON
+// object per line (JSONL) on stdout.
+type Outcome struct {
+	Status  string `json:"status"`            // ok | blocked | error
+	Code    int    `json:"code"`              // process exit code (0 for ok)
+	Reason  string `json:"reason,omitempty"`  // stable machine token (app-defined)
+	Message string `json:"message,omitempty"` // human-readable detail
+	Data    any    `json:"data,omitempty"`    // payload on success
+}
+
+// EmitJSONL writes v as a single JSON line to Stdout.
+func (c *Config) EmitJSONL(v any) error {
+	if err := json.NewEncoder(c.Stdout).Encode(v); err != nil {
+		return fmt.Errorf("emit jsonl: %w", err)
+	}
+	return nil
+}
+
+// EmitOK writes a success Outcome carrying data.
+func (c *Config) EmitOK(data any) error {
+	return c.EmitJSONL(Outcome{Status: StatusOK, Data: data})
+}
+
+// EmitBlocked writes a non-fatal "blocked" Outcome.
+func (c *Config) EmitBlocked(code int, reason, message string) error {
+	return c.EmitJSONL(Outcome{Status: StatusBlocked, Code: code, Reason: reason, Message: message})
+}
+
+// EmitError writes an error Outcome.
+func (c *Config) EmitError(code int, reason, message string) error {
+	return c.EmitJSONL(Outcome{Status: StatusError, Code: code, Reason: reason, Message: message})
+}
+
+// CodeForError maps err to a process exit code. This stub returns 1 for any
+// non-nil error; specialize it to read your app's error taxonomy.
+func CodeForError(err error) int {
+	if err == nil {
+		return 0
+	}
+	return 1
+}

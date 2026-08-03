@@ -1,0 +1,25 @@
+// misplaced.go guards against flags written after a positional argument in the
+// ROOT_PKG package. ff/v4 stops flag parsing at the first positional, so a flag
+// such as the "--json" in "cmd path --json" is silently captured as a positional
+// instead of being parsed.
+
+package ROOT_PKG
+
+import "strings"
+
+// MisplacedFlag returns the first argument that looks like a flag ("-x" or
+// "--long"), or "" when none do. The conventional positionals "-" (stdin) and
+// "--" (end-of-flags marker) are not treated as flags. Commands that take
+// positional arguments should call MisplacedFlag(args) and fail loudly when it
+// returns a non-empty string, rather than silently ignoring the flag.
+func MisplacedFlag(args []string) string {
+	for _, a := range args {
+		if a == "-" || a == "--" {
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			return a
+		}
+	}
+	return ""
+}

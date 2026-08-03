@@ -2,6 +2,7 @@ package scaffold_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,106 @@ func TestGoVet_InitThenAdd(t *testing.T) {
 	run(t, dir, goTool, "mod", "tidy")
 
 	// --- go vet ./... ---
+	run(t, dir, goTool, "vet", "./...")
+}
+
+// TestGoVet_InitMachineThenAdd verifies that a fully-featured scaffold
+// (init --machine, i.e. all four opt-in features) followed by "climax add"
+// produces Go source that compiles cleanly under "go vet ./...".
+//
+// Like the other integration tests it is skipped in short mode and when the go
+// tool is unavailable, because it runs "go mod tidy" (which may hit the network)
+// and "go vet" (which compiles the generated code).
+func TestGoVet_InitMachineThenAdd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go tool not available:", err)
+	}
+
+	dir := t.TempDir()
+	const importPrefix = "github.com/example/machineapp"
+
+	run(t, dir, goTool, "mod", "init", importPrefix)
+
+	written, err := scaffold.InitApp(dir, scaffold.InitOptions{
+		ImportPrefix: importPrefix,
+		Name:         "machineapp",
+		Short:        "a fully-featured test application",
+		Features: scaffold.Features{
+			JSONL: true, GlobalFlags: true, Logger: true, Getenv: true, PosixGuard: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("InitApp: %v", err)
+	}
+	t.Logf("InitApp wrote: %v", written)
+
+	created, modified, err := scaffold.AddCommand(dir, "serve", importPrefix, scaffold.AddOptions{})
+	if err != nil {
+		t.Fatalf("AddCommand: %v", err)
+	}
+	t.Logf("AddCommand created %s, modified %s", created, modified)
+
+	for _, rel := range append(written, created, modified) {
+		if data, readErr := os.ReadFile(filepath.Join(dir, rel)); readErr == nil {
+			t.Logf("=== %s ===\n%s", rel, data)
+		}
+	}
+
+	run(t, dir, goTool, "mod", "tidy")
+	run(t, dir, goTool, "vet", "./...")
+}
+
+// TestGoVet_RegisterSplit verifies that a dispatcher whose registrations have
+// been extracted into register() (by adding enough commands to pass the split
+// threshold) still compiles cleanly under "go vet ./...".
+func TestGoVet_RegisterSplit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go tool not available:", err)
+	}
+
+	dir := t.TempDir()
+	const importPrefix = "github.com/example/bigapp"
+
+	run(t, dir, goTool, "mod", "init", importPrefix)
+
+	if _, err := scaffold.InitApp(dir, scaffold.InitOptions{
+		ImportPrefix: importPrefix,
+		Name:         "bigapp",
+		Short:        "a large test application",
+	}); err != nil {
+		t.Fatalf("InitApp: %v", err)
+	}
+	// init registers version (1); eight more adds cross the split threshold.
+	for i := 1; i <= 8; i++ {
+		name := fmt.Sprintf("cmd%d", i)
+		if _, _, err := scaffold.AddCommand(
+			dir,
+			name,
+			importPrefix,
+			scaffold.AddOptions{},
+		); err != nil {
+			t.Fatalf("AddCommand(%s): %v", name, err)
+		}
+	}
+
+	cmdGo, err := os.ReadFile(filepath.Join(dir, "cmd", "cmd.go"))
+	if err != nil {
+		t.Fatalf("reading cmd/cmd.go: %v", err)
+	}
+	if !strings.Contains(string(cmdGo), "func register(") {
+		t.Fatalf("expected register() split after crossing the threshold; cmd.go:\n%s", cmdGo)
+	}
+	t.Logf("=== cmd/cmd.go ===\n%s", cmdGo)
+
+	run(t, dir, goTool, "mod", "tidy")
 	run(t, dir, goTool, "vet", "./...")
 }
 

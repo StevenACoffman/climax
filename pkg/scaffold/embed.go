@@ -17,5 +17,14 @@ var versionTemplate string
 //go:embed templates/newcmd.go.tmpl
 var newCmdTemplate string
 
+//go:embed templates/logger.go.tmpl
+var loggerTemplate string
+
+//go:embed templates/outcome.go.tmpl
+var outcomeTemplate string
+
+//go:embed templates/misplaced.go.tmpl
+var misplacedTemplate string
+
 //go:embed templates/man.go.tmpl
 var manCmdTemplate string

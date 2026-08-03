@@ -24,6 +24,12 @@ type Config struct {
 	EnvPrefix   string
 	NoEnvPrefix bool
 	NoVersion   bool
+	JSONL       bool
+	GlobalFlags bool
+	Logger      bool
+	Getenv      bool
+	PosixGuard  bool
+	Machine     bool
 	Flags       *ff.FlagSet
 	Command     *ff.Command
 }
@@ -49,6 +55,14 @@ Generated files:
   cmd/<root-pkg>/<root-pkg>.go
   cmd/version/version.go       (unless --no-version)
 
+Opt-in features (off by default; --machine enables all four):
+
+  --jsonl         cmd/<root-pkg>/outcome.go    generic JSONL Outcome envelope
+  --global-flags  root Config                  --verbose/-v, --quiet/-q, --no-color, --jsonl
+  --logger        cmd/<root-pkg>/logger.go     slog diagnostic logger on stderr
+  --getenv        New/Run signatures           injected getenv func
+  --posix-guard   cmd/<root-pkg>/misplaced.go  MisplacedFlag positional/flag guard
+
 Environment variable overrides (CLIMAX_ prefix):
 
   CLIMAX_NAME           --name
@@ -57,7 +71,13 @@ Environment variable overrides (CLIMAX_ prefix):
   CLIMAX_ROOT_PKG       --root-pkg
   CLIMAX_ENV_PREFIX     --env-prefix
   CLIMAX_NO_ENV_PREFIX  --no-env-prefix
-  CLIMAX_NO_VERSION     --no-version`,
+  CLIMAX_NO_VERSION     --no-version
+  CLIMAX_JSONL          --jsonl
+  CLIMAX_GLOBAL_FLAGS   --global-flags
+  CLIMAX_LOGGER         --logger
+  CLIMAX_GETENV         --getenv
+  CLIMAX_POSIX_GUARD    --posix-guard
+  CLIMAX_MACHINE        --machine`,
 		Flags: cfg.Flags,
 		Exec:  cfg.exec,
 	}
@@ -96,6 +116,30 @@ func (cfg *Config) registerFlags() {
 		"use ff.WithEnvVars() (no prefix) instead of ff.WithEnvVarPrefix; mutually exclusive with --env-prefix",
 	)
 	cfg.Flags.BoolVar(&cfg.NoVersion, 0, "no-version", "skip generating cmd/version/version.go")
+	cfg.Flags.BoolVar(&cfg.JSONL, 0, "jsonl",
+		"generate a generic JSONL Outcome envelope (Emit* helpers) in the root package")
+	cfg.Flags.BoolVar(&cfg.GlobalFlags, 0, "global-flags",
+		"bind --verbose/-v, --quiet/-q, --no-color, --jsonl on the root Config")
+	cfg.Flags.BoolVar(&cfg.Logger, 0, "logger",
+		"add a slog diagnostic logger (writing to stderr) plus NewLogger/LogLevel helpers")
+	cfg.Flags.BoolVar(&cfg.Getenv, 0, "getenv",
+		"thread an injected getenv func through New/Run (testable config precedence)")
+	cfg.Flags.BoolVar(&cfg.PosixGuard, 0, "posix-guard",
+		"generate the MisplacedFlag helper (detect a flag written after a positional)")
+	cfg.Flags.BoolVar(&cfg.Machine, 0, "machine",
+		"umbrella: enable --jsonl, --global-flags, --logger, --getenv, and --posix-guard")
+}
+
+// features resolves the selected opt-in features, expanding the --machine
+// umbrella flag into the individual features it turns on.
+func (cfg *Config) features() scaffold.Features {
+	return scaffold.Features{
+		JSONL:       cfg.JSONL || cfg.Machine,
+		GlobalFlags: cfg.GlobalFlags || cfg.Machine,
+		Logger:      cfg.Logger || cfg.Machine,
+		Getenv:      cfg.Getenv || cfg.Machine,
+		PosixGuard:  cfg.PosixGuard || cfg.Machine,
+	}
 }
 
 func (cfg *Config) exec(_ context.Context, args []string) error {
@@ -142,6 +186,7 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 		EnvPrefix:    cfg.EnvPrefix,
 		NoEnvPrefix:  cfg.NoEnvPrefix,
 		NoVersion:    cfg.NoVersion,
+		Features:     cfg.features(),
 	}
 
 	written, err := scaffold.InitApp(absPath, opts)

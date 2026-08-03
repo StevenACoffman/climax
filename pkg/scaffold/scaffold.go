@@ -17,6 +17,11 @@ const (
 	CommandsMarker = "// register new commands here"
 )
 
+// registerSplitThreshold is the number of inline command registrations at which
+// AddCommand extracts them from Run into a dedicated register() function,
+// keeping Run focused on parse-and-dispatch.
+const registerSplitThreshold = 8
+
 // AddOptions controls what AddCommand generates for the new command file.
 type AddOptions struct {
 	Name   string // ff.Command.Name; defaults to the Go package name (positional arg)
@@ -40,6 +45,9 @@ type InitOptions struct {
 	// at the CLI layer; both may be set here (EnvPrefix is ignored in the output).
 	NoEnvPrefix bool
 	NoVersion   bool // when true, skip generating cmd/version/version.go
+	// Features selects opt-in template additions applied on top of the base
+	// scaffold. The zero value is the default lean scaffold.
+	Features Features
 }
 
 // InitApp writes a complete Climax application scaffold to dir and returns
@@ -90,10 +98,6 @@ func InitApp(dir string, opts InitOptions) ([]string, error) {
 		"VERSION_CALL":   versionCall,
 	}
 
-	type fileEntry struct {
-		rel  string
-		tmpl string
-	}
 	files := []fileEntry{
 		{"main.go", mainTemplate},
 		{filepath.Join("cmd", "cmd.go"), cmdTemplate},
@@ -105,13 +109,33 @@ func InitApp(dir string, opts InitOptions) ([]string, error) {
 			versionTemplate,
 		})
 	}
+	files = append(files, featureFiles(opts.Features, opts.RootPkg)...)
 
+	return writeScaffold(dir, files, vars, opts)
+}
+
+// writeScaffold renders each file entry (base vars, then --no-env-prefix and
+// feature transforms) and writes it under dir, returning the relative paths in
+// write order.
+//
+//nolint:gocritic // hugeParam: InitOptions is an options struct; passing by value is idiomatic
+func writeScaffold(
+	dir string,
+	files []fileEntry,
+	vars map[string]string,
+	opts InitOptions,
+) ([]string, error) {
 	cmdRel := filepath.Join("cmd", "cmd.go")
+	ctx := featureCtx{appName: opts.Name, rootPkg: opts.RootPkg}
 	var written []string
 	for _, f := range files {
 		content := applyVars(f.tmpl, vars)
 		if opts.NoEnvPrefix && f.rel == cmdRel {
 			content = applyNoEnvPrefix(content, opts.EnvPrefix)
+		}
+		content, err := applyFeatures(content, f.rel, opts.Features, ctx)
+		if err != nil {
+			return nil, err
 		}
 		if err := writeFile(filepath.Join(dir, f.rel), content); err != nil {
 			return nil, err
@@ -209,6 +233,12 @@ func AddCommand(
 		applyVars(newCmdTemplate, vars),
 	); err != nil {
 		return "", "", err
+	}
+
+	// Once the dispatcher grows past the threshold, extract the inline
+	// registrations into a register() function before adding the new command.
+	if split, ok := maybeSplitRegister(info, src); ok {
+		src = split
 	}
 
 	// Register in the dispatcher file.
@@ -319,6 +349,54 @@ func registerInCmdGo(info *dispatcherInfo, src []byte, name, importPrefix, paren
 		return registerViaMarkers(info, string(src), name, importPrefix, parentPkg)
 	}
 	return registerViaAST(info, src, name, importPrefix, parentPkg)
+}
+
+// maybeSplitRegister extracts the inline command registrations in Run into a
+// dedicated register(<rootVar> *<rootPkg>.Config) function once the dispatcher
+// has grown past registerSplitThreshold. It is a pure transform: it returns the
+// rewritten source and true when it splits, or (src, false) when a split is not
+// applicable. The // register new commands here marker moves into register(),
+// so the normal marker-based insertion continues to work unchanged afterward.
+//
+// A split is applied only when the dispatcher is marker-based, has not already
+// been split, and the block of registrations holds at least the threshold count
+// — otherwise AddCommand keeps inlining calls in Run.
+func maybeSplitRegister(info *dispatcherInfo, src []byte) ([]byte, bool) {
+	if !info.markerBased {
+		return src, false
+	}
+	content := string(src)
+	if strings.Contains(content, "func register(") {
+		return src, false // already split
+	}
+
+	// The registration block runs from the line after "<rootVar> := <rootPkg>.New("
+	// through the marker line.
+	newDecl := "\t" + info.rootVar + " := " + info.rootPkg + ".New("
+	declIdx := strings.Index(content, newDecl)
+	markerIdx := strings.Index(content, CommandsMarker)
+	if declIdx == -1 || markerIdx == -1 || markerIdx < declIdx {
+		return src, false
+	}
+	declLineEnd := strings.IndexByte(content[declIdx:], '\n')
+	markerLineEnd := strings.IndexByte(content[markerIdx:], '\n')
+	if declLineEnd == -1 || markerLineEnd == -1 {
+		return src, false
+	}
+	blockStart := declIdx + declLineEnd + 1
+	blockEnd := markerIdx + markerLineEnd + 1
+	block := content[blockStart:blockEnd]
+	if strings.Count(block, ".New(") < registerSplitThreshold {
+		return src, false
+	}
+
+	rebuilt := content[:blockStart] +
+		"\tregister(" + info.rootVar + ")\n" +
+		content[blockEnd:] +
+		"\nfunc register(" + info.rootVar + " *" + info.rootPkg + ".Config) {\n" +
+		block +
+		"}\n"
+	return []byte(rebuilt), true
 }
 
 // registerViaMarkers is the original text-replacement path, used when both

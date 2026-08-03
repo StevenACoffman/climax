@@ -1,0 +1,36 @@
+// logger.go provides the diagnostic slog logger for the ROOT_PKG package.
+// Diagnostics are written to stderr so the stdout data plane stays clean and
+// machine-parseable.
+
+package ROOT_PKG
+
+import (
+	"io"
+	"log/slog"
+)
+
+// NewLogger returns a slog.Logger writing to w at the given level. It uses a
+// JSON handler when jsonl is true, otherwise a text handler.
+func NewLogger(w io.Writer, jsonl bool, level slog.Level) *slog.Logger {
+	opts := &slog.HandlerOptions{Level: level}
+	var h slog.Handler
+	if jsonl {
+		h = slog.NewJSONHandler(w, opts)
+	} else {
+		h = slog.NewTextHandler(w, opts)
+	}
+	return slog.New(h)
+}
+
+// LogLevel maps the --verbose/--quiet flags to a slog.Level: quiet reports only
+// errors, verbose reports debug and above, and the default reports warnings.
+func LogLevel(verbose, quiet bool) slog.Level {
+	switch {
+	case quiet:
+		return slog.LevelError
+	case verbose:
+		return slog.LevelDebug
+	default:
+		return slog.LevelWarn
+	}
+}

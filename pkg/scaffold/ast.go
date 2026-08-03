@@ -28,6 +28,10 @@ type dispatcherInfo struct {
 	// the marker is absent (meaning the app was inited with --no-env-prefix).
 	envPrefix string
 
+	// features is the raw value of the climax:features marker (e.g.
+	// "jsonl,logger"), or "" when the app opted into no features.
+	features string
+
 	markerBased bool // true when both text markers are present
 
 	// Populated only when !markerBased:
@@ -127,6 +131,7 @@ func analyzeDispatcher(dir string) (*dispatcherInfo, []byte, error) {
 		rootPkg:   readMarker(content, "// climax:root-pkg"),
 		cliName:   readMarker(content, "// climax:name"),
 		envPrefix: readMarker(content, "// climax:env-prefix"),
+		features:  readMarker(content, "// climax:features"),
 	}
 	if info.rootPkg == "" {
 		info.rootPkg = "root"
