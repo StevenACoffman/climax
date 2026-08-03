@@ -83,6 +83,23 @@ func TestLintExpectedCmd_substitutesPkg(t *testing.T) {
 	}
 }
 
+func TestLintExpectedGuard_containsGuard(t *testing.T) {
+	got, err := lintExpectedGuard("root")
+	if err != nil {
+		t.Fatalf("lintExpectedGuard: %v", err)
+	}
+	for _, want := range []string{
+		"// An unmatched token", // the explanatory comment is included
+		"r.Command.GetSelected()",
+		"sel.Flags.GetArgs()",
+		`unknown subcommand %q`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("lintExpectedGuard: missing %q\ngot:\n%s", want, got)
+		}
+	}
+}
+
 func TestLintExpectedRoot_stdinPresent(t *testing.T) {
 	got, err := lintExpectedRoot("root")
 	if err != nil {
