@@ -1,0 +1,21 @@
+# Mutation testing configuration.
+#
+# Mutation testing answers a question coverage cannot: not "was this line executed?" but
+# "would any test have noticed if it behaved differently?". A surviving mutant marks a line the
+# suite runs without checking.
+#
+# A score is still a metric, and a metric written to is a metric gamed. Read survivors as a
+# prompt — is this behaviour worth pinning, or is the mutant indifferent? — rather than as a list
+# of tests to add. Thresholds live in the .mise.toml task or workflow that names the scope, not
+# here, because the right floor depends on what is being mutated: the dispatcher analysis and
+# registration in pkg/scaffold, and the build-info reading in cmd/version, carry the invariants.
+#
+# The property tests in proptest/ are a module of their own, so mutago's `go test` per mutant
+# never runs them: a mutant only rapid would catch is reported here as escaped.
+exclude_dirs:
+# The release helper, which the suite does not exercise at all.
+- bin
+# A module of its own, reached only through its own tasks and workflow.
+- proptest
+ignore_source_lines:
+- "// Code generated"

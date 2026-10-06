@@ -516,10 +516,37 @@ myapp version        # prints v1.2.3
 myapp version --json # machine-readable output
 ```
 
-For local or untagged builds, the version defaults to `"dev"`. Override it at link time if needed:
+When the build records no version at all (`-buildvcs=false`, an exported tarball), it reports `devel`. Override it at link time if needed:
 
 ```sh
 go build -ldflags "-X 'github.com/yourname/myapp/cmd/version.Version=v1.2.3'" -o myapp .
 ```
 
-`var Version = "dev"` is a deliberate exception to the no-globals rule: the Go linker's `-ldflags "-X <pkg>.Version=<val>"` mechanism requires a package-level `var`, not a constant or local variable.
+`Commit`, `CommitDate`, `TreeState`, and `BuiltBy` are the matching link-time variables for the VCS fields. A build through the Go module proxy (`go install module@version`, or goreleaser with `gomod.proxy: true`) carries no VCS stamps, so a release build injects them, as climax's own `.goreleaser.yaml` does:
+
+```yaml
+ldflags:
+- -s -w
+- -X {{ .ModulePath }}/cmd/version.Version={{ .Tag }}
+- -X {{ .ModulePath }}/cmd/version.Commit={{ .FullCommit }}
+- -X {{ .ModulePath }}/cmd/version.CommitDate={{ .CommitDate }}
+- -X {{ .ModulePath }}/cmd/version.TreeState={{ .GitTreeState }}
+- -X {{ .ModulePath }}/cmd/version.BuiltBy=goreleaser
+```
+
+Use `{{ .Tag }}` rather than `{{ .Version }}`, which drops the leading `v`. A non-empty link-time value wins over build info. The linker silently ignores `-X` for a variable that does not exist, so check the output of `version` after changing these.
+
+`version` also reports a `Source` line saying where the binary's source came from, so an `unknown` field can be read as expected or as a bug:
+
+| Source (JSON `source`) | Built by                                             | Commit and date from                                                                   |
+| ---------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `release`              | goreleaser or any build with the link-time variables | the link-time variables                                                                |
+| `module`               | `go install` / `go run` `module@version`             | a pseudo-version; for a tag, not embedded (the `Source` line links the proxy's record) |
+| `vcs`                  | `go build` / `go install .` in a checkout            | the toolchain's VCS stamp                                                              |
+| `local`                | `-buildvcs=false`, an exported tarball, no VCS       | nowhere: `unknown`                                                                     |
+
+A `module` build reports `GitTreeState: clean`: `go install module@version` refuses `replace` directives and checks the module zip against `ModuleSum`, so the source is exactly that version's tree.
+
+climax's tests replay a recorded build of each kind through both its own `cmd/version` and the template's copy. `bin/capture-buildinfo.sh` records them; re-run it when the Go toolchain or goreleaser changes what a build embeds.
+
+These package-level `var`s are a deliberate exception to the no-globals rule: the Go linker's `-ldflags "-X <pkg>.<Var>=<val>"` mechanism requires a package-level `var`, not a constant or local variable.

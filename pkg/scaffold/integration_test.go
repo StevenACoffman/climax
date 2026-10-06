@@ -2,13 +2,16 @@ package scaffold_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 
+	"github.com/StevenACoffman/climax/cmd/version"
 	"github.com/StevenACoffman/climax/pkg/scaffold"
 )
 
@@ -262,4 +265,211 @@ func run(t *testing.T, dir, name string, args ...string) {
 	if err != nil {
 		t.Fatalf("%s %v: %v", name, args, err)
 	}
+}
+
+// TestGoBuild_versionLdflags verifies that a generated app's cmd/version
+// honors the same link-time variables climax's own .goreleaser.yaml injects.
+// The linker silently ignores -X for a variable that does not exist, so a
+// template that drops or renames one would build fine and report "unknown".
+//
+// Skipped in short mode and without the go tool: it runs "go mod tidy" (which
+// may hit the network) and builds the generated app.
+func TestGoBuild_versionLdflags(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go tool not available:", err)
+	}
+
+	dir := t.TempDir()
+	const importPrefix = "github.com/example/stampapp"
+	run(t, dir, goTool, "mod", "init", importPrefix)
+	if _, err := scaffold.InitApp(
+		dir,
+		scaffold.InitOptions{ImportPrefix: importPrefix},
+	); err != nil {
+		t.Fatalf("InitApp: %v", err)
+	}
+	run(t, dir, goTool, "mod", "tidy")
+
+	stamp := map[string]string{
+		"Version":    "v9.9.9",
+		"Commit":     "deadbeef",
+		"CommitDate": "2026-01-02T03:04:05Z",
+		"TreeState":  "dirty",
+		"BuiltBy":    "probe",
+	}
+	var ldflags []string
+	for name, value := range stamp {
+		ldflags = append(ldflags, "-X "+importPrefix+"/cmd/version."+name+"="+value)
+	}
+	bin := filepath.Join(dir, "stampapp")
+	run(t, dir, goTool, "build", "-ldflags", strings.Join(ldflags, " "), "-o", bin, ".")
+
+	//nolint:gosec // G204: runs the binary this test just built
+	out, err := exec.CommandContext(context.Background(), bin, "version", "--json").Output()
+	if err != nil {
+		t.Fatalf("stampapp version --json: %v", err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decoding %s: %v", out, err)
+	}
+	want := map[string]string{
+		"gitVersion":   "v9.9.9",
+		"gitCommit":    "deadbeef",
+		"buildDate":    "2026-01-02T03:04:05",
+		"gitTreeState": "dirty",
+		"builtBy":      "probe",
+	}
+	for field, w := range want {
+		if got[field] != w {
+			t.Errorf("%s = %q, want %q", field, got[field], w)
+		}
+	}
+}
+
+// TestVersionTemplate_matchesClimaxOnRecordedBuilds runs a generated app's
+// cmd/version over every build bin/capture-buildinfo.sh recorded and requires
+// the same report climax's own cmd/version gives. The template is a copy, not
+// an import, so this is what keeps the two from drifting apart.
+//
+// Skipped in short mode and without the go tool: it runs "go mod tidy" (which
+// may hit the network) and "go test" in the generated app.
+func TestVersionTemplate_matchesClimaxOnRecordedBuilds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go tool not available:", err)
+	}
+	fixtures, err := filepath.Glob(
+		filepath.Join("..", "..", "cmd", "version", "testdata", "buildinfo", "*.txt"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("no recorded builds (run bin/capture-buildinfo.sh): %v", err)
+	}
+
+	app := appVersionReport(t, goTool, fixtures)
+	for _, f := range fixtures {
+		name := strings.TrimSuffix(filepath.Base(f), ".txt")
+		got, ok := app[name]
+		if !ok {
+			t.Errorf("%s: generated app produced no report", name)
+			continue
+		}
+		for field, want := range climaxReport(t, f) {
+			if got[field] != want {
+				t.Errorf("%s: %s = %v in the generated app, %v in climax",
+					name, field, got[field], want)
+			}
+		}
+	}
+}
+
+// appVersionReport generates an app, copies the fixtures and
+// testdata/version_dump_test.go.txt into its cmd/version, and returns what the
+// app's copy of the version logic reports for each fixture.
+func appVersionReport(t *testing.T, goTool string, fixtures []string) map[string]map[string]any {
+	t.Helper()
+	dir := t.TempDir()
+	const importPrefix = "github.com/example/versionapp"
+	run(t, dir, goTool, "mod", "init", importPrefix)
+	if _, err := scaffold.InitApp(
+		dir,
+		scaffold.InitOptions{ImportPrefix: importPrefix},
+	); err != nil {
+		t.Fatalf("InitApp: %v", err)
+	}
+	versionDir := filepath.Join(dir, "cmd", "version")
+	fixtureDir := filepath.Join(versionDir, "testdata", "buildinfo")
+	if err := os.MkdirAll(fixtureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fixtures {
+		copyFile(t, f, filepath.Join(fixtureDir, filepath.Base(f)))
+	}
+	dump, err := os.ReadFile(filepath.Join("testdata", "version_dump_test.go.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dump = []byte(strings.ReplaceAll(string(dump), "APP_IMPORT", importPrefix))
+	if err := os.WriteFile(filepath.Join(versionDir, "dump_test.go"), dump, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, dir, goTool, "mod", "tidy")
+	reportPath := filepath.Join(t.TempDir(), "report.json")
+	run(t, dir, goTool, "test", "./cmd/version", "-run", "TestDump", "-args", "-out="+reportPath)
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report map[string]map[string]any
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	return report
+}
+
+// copyFile copies src to dst.
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// climaxReport is climax's own cmd/version reading of a recorded build, as the
+// generic JSON map the generated app's report decodes to.
+func climaxReport(t *testing.T, fixture string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bi, err := debug.ParseBuildInfo(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(version.GetVersionInfoFrom(bi, stampFromLdflags(bi)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// stampFromLdflags recovers the link-time stamp from a recorded -ldflags
+// setting, as testdata/version_dump_test.go.txt does inside the app.
+func stampFromLdflags(bi *debug.BuildInfo) version.Stamp {
+	stamp := version.Stamp{Version: "dev"}
+	set := map[string]*string{
+		"Version": &stamp.Version, "Commit": &stamp.Commit, "CommitDate": &stamp.CommitDate,
+		"TreeState": &stamp.TreeState, "BuiltBy": &stamp.BuiltBy,
+	}
+	for _, s := range bi.Settings {
+		if s.Key != "-ldflags" {
+			continue
+		}
+		for _, field := range strings.Fields(s.Value) {
+			target, value, ok := strings.Cut(field, "=")
+			if !ok || !strings.Contains(target, "/cmd/version.") {
+				continue
+			}
+			if p, ok := set[target[strings.LastIndex(target, ".")+1:]]; ok {
+				*p = value
+			}
+		}
+	}
+	return stamp
 }
