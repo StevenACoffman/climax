@@ -93,7 +93,10 @@ func LintApp(appDir string) ([]LintIssue, error) {
 	// pattern; report once if any of them are absent.
 	mainHasSignal := astHasCall(mainPS.file, "main", "NotifyContext")
 	mainHasRun := astHasFuncDecl(mainPS.file, "run")
-	mainHasStdin := astCallPassesIdent(mainPS.file, "run", "cmd", "Run", "Stdin")
+	// run either reads os.Stdin itself or, in the injectable shape, forwards
+	// its stdin parameter; both keep stdin reaching the dispatcher.
+	mainHasStdin := astCallPassesIdent(mainPS.file, "run", "cmd", "Run", "Stdin") ||
+		astCallPassesIdent(mainPS.file, "run", "cmd", "Run", "stdin")
 
 	if !mainHasSignal || !mainHasRun || !mainHasStdin {
 		found := mainPS.extractFuncs("main", "run")

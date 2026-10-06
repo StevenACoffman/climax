@@ -99,10 +99,17 @@ func applyFeatures(content, rel string, f Features, ctx featureCtx) (string, err
 // applyMainFeatures rewrites main.go for the enabled features.
 func applyMainFeatures(content string, f Features) string {
 	if f.Getenv {
-		// Thread os.Getenv into the dispatcher call so New/Run can inject it.
+		// Thread os.Getenv through run into the dispatcher call so New/Run can
+		// inject it, and a test of run can pass its own.
 		content = strings.Replace(content,
-			"cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)",
-			"cmd.Run(ctx, os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr)", 1)
+			"run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr)",
+			"run(ctx, os.Args, os.Getenv, os.Stdin, os.Stdout, os.Stderr)", 1)
+		content = strings.Replace(content,
+			"\targs []string,\n\tstdin io.Reader,",
+			"\targs []string,\n\tgetenv func(string) string,\n\tstdin io.Reader,", 1)
+		content = strings.Replace(content,
+			"cmd.Run(ctx, args[1:], stdin, stdout, stderr)",
+			"cmd.Run(ctx, args[1:], getenv, stdin, stdout, stderr)", 1)
 	}
 	return content
 }

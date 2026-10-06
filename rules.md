@@ -33,6 +33,7 @@ These are the highest-priority rules. They represent the most common mistakes.
 - Do not call `os.Exit` inside a command. Return errors or `root.ExitError`; only `run()` in `main.go` controls exit codes.
 - Do not use `os.Stdout` / `os.Stderr` directly. Write to `cfg.Stdout` / `cfg.Stderr` (from `root.Config`).
 - Do not treat `ff.ErrHelp` or `ff.ErrNoExec` as failures. Handle both as success in `run()`.
+- Do not print help from a command. Return `&root.UsageError{Err: ...}` for a mistake in the command line (a missing or invalid argument, conflicting flags) and let the dispatcher print help; return a plain error for a runtime failure, which gets no help.
 - Do not hide behaviour behind hard-coded values or `os.Getenv` calls. Every configurable knob must be a registered flag on an `ff.FlagSet` — running any command with `-h` must reveal its complete configuration surface.
 - Error strings: lowercase, no trailing punctuation, format `<command>: <reason>`.
 
@@ -680,14 +681,18 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	// register new commands here
 
 	if err := r.Command.Parse(args); err != nil {
-		fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
-		return fmt.Errorf("parse: %w", err)
+		// --help asked for help; any other parse failure is a usage error.
+		fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
+		if errors.Is(err, ff.ErrHelp) {
+			return fmt.Errorf("parse: %w", err)
+		}
+		return &root.UsageError{Err: fmt.Errorf("parse: %w", err)}
 	}
 
 	if err := r.Command.Run(ctx); err != nil {
-		// Suppress help output for ErrNoExec and ExitError — both are intentional.
-		var exitErr root.ExitError
-		if !errors.Is(err, ff.ErrNoExec) && !errors.As(err, &exitErr) {
+		// Help is for usage mistakes only; runtime failures, ErrNoExec and
+		// ExitError do not match ErrUsage.
+		if errors.Is(err, root.ErrUsage) {
 			fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
 		}
 		return err
@@ -703,7 +708,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 - Subcommand selection is case-insensitive match on `Name`. No prefix matching, no fuzzy matching.
 - `-h` / `--help` at any level causes `Parse` to return `ff.ErrHelp`; `run()` treats this as success.
 - A command with no `Exec` causes `Run` to return `ff.ErrNoExec`; `run()` treats this as success.
-- Unknown subcommand returns an error; `run()` in `main.go` owns the exit code.
+- Unknown subcommand returns a `*root.UsageError`; `run()` in `main.go` owns the exit code.
+- The dispatcher prints help for `--help` and usage errors (`errors.Is(err, root.ErrUsage)`) only; runtime failures are reported without help.
 
 ### Post-Parse Initialization
 
@@ -748,6 +754,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -757,33 +764,52 @@ import (
 	"<org>/<repo>/cmd/root"
 )
 
+// Exit codes. A usage error gets its own code, as the flag package and POSIX
+// utilities do, so a script can tell "called it wrong" from "it failed".
 const (
-	exitFail    = 1
 	exitSuccess = 0
+	exitFail    = 1
+	exitUsage   = 2
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(),
-		os.Interrupt,    // SIGINT = Ctrl+C
+		os.Interrupt,    // interrupt = SIGINT = Ctrl+C
 		syscall.SIGQUIT, // Ctrl-\
-		syscall.SIGTERM, // polite termination request
+		syscall.SIGTERM, // "the normal way to politely ask a program to terminate"
 	)
-	code := run(ctx)
+	code := run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
 
 // run is intentionally separated from main to improve testability. Please preserve this comment.
-func run(ctx context.Context) int {
-	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+//
+// It takes every OS primitive as a parameter so a test can drive the whole
+// stack with injected I/O and assert on the exit code. args includes the
+// program name, as os.Args does; run strips it before handing the rest to the
+// dispatcher.
+func run(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+) int {
+	err := cmd.Run(ctx, args[1:], stdin, stdout, stderr)
 	var exitErr root.ExitError
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
 		return exitSuccess
 	case errors.As(err, &exitErr):
+		// The command has already reported its outcome; the code is the rest
+		// of the message, so printing an error here would only add noise.
 		return int(exitErr)
+	case errors.Is(err, root.ErrUsage):
+		// The dispatcher has already printed the command's help above this.
+		_, _ = fmt.Fprintf(stderr, "error: %+v\n", err)
+		return exitUsage
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %+v\n", err)
 		return exitFail
 	}
 }

@@ -82,9 +82,14 @@ Environment variable overrides (CLIMAX_ prefix):
 
 func (cfg *Config) exec(_ context.Context, args []string) error {
 	if len(args) < 1 {
-		return errors.New("add: command name required (usage: climax add [FLAGS] <name> [path])")
+		return &root.UsageError{Err: errors.New("add: command name required")}
 	}
 	name := args[0]
+	// AddCommand checks the name too; checking it here first is what lets a
+	// bad name be reported as a usage error, with help, like the flags below.
+	if err := scaffold.ValidateIdent(name); err != nil {
+		return &root.UsageError{Err: fmt.Errorf("add: %w", err)}
+	}
 
 	path := "."
 	if len(args) > 1 {
@@ -93,13 +98,13 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 
 	if cfg.Name != "" {
 		if err := scaffold.ValidateCliName(cfg.Name); err != nil {
-			return fmt.Errorf("add: --name: %w", err)
+			return &root.UsageError{Err: fmt.Errorf("add: --name: %w", err)}
 		}
 	}
 
 	if cfg.Parent != "" {
 		if err := scaffold.ValidateIdent(cfg.Parent); err != nil {
-			return fmt.Errorf("add: --parent: %w", err)
+			return &root.UsageError{Err: fmt.Errorf("add: --parent: %w", err)}
 		}
 	}
 

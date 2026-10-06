@@ -60,8 +60,9 @@ Structural properties checked:
 
   main      signal.NotifyContext, run() separation, os.Stdin passed to cmd.Run
   cmd       stdin io.Reader parameter in Run, stdin forwarded to root.New,
-            ff.WithEnvVarPrefix in Parse call
-  root      Stdin io.Reader field, stdin parameter in New, cfg.Stdin assignment
+            ff.WithEnvVarPrefix in Parse call, help only for ErrUsage errors
+  root      Stdin io.Reader field, stdin parameter in New, cfg.Stdin assignment,
+            UsageError type
   version   JSON flag in Config, tabwriter output, GetVersionInfoFrom function,
             Info methods pointer receivers, Option type, With* constructors
   man       Section int field in Config

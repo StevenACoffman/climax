@@ -169,3 +169,78 @@ func TestLintExpectedRoot_usesRootPkg(t *testing.T) {
 		t.Errorf("package name: got %q, want %q", ps.file.Name.Name, "mypkg")
 	}
 }
+
+// TestBuildDiff_roundTrip states what makes buildDiff's output a diff: read
+// without its "+" lines it is the found text, read without its "-" lines it is
+// the expected text, and a line both share is shown once as context. The cases
+// put the difference at each edge an LCS walk can get wrong.
+func TestBuildDiff_roundTrip(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		found, expected string
+		wantContext     int
+	}{
+		"identical":           {"a\nb\nc", "a\nb\nc", 3},
+		"empty found":         {"", "a\nb", 0},
+		"empty expected":      {"a\nb", "", 0},
+		"differs first line":  {"x\nb\nc", "a\nb\nc", 2},
+		"differs last line":   {"a\nb\nx", "a\nb\nc", 2},
+		"found has a tail":    {"a\nb\nc\nd", "a\nb", 2},
+		"expected has a tail": {"a\nb", "a\nb\nc\nd", 2},
+		"nothing shared":      {"x\ny", "a\nb", 0},
+		"reordered":           {"a\nb\nc\nd", "d\na\nb\nc", 3},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out := buildDiff("f.go", tc.found, tc.expected)
+			found, expected, context := splitDiff(t, out)
+			// Compare line counts too, so an empty side must have no lines at
+			// all rather than one blank one.
+			gotFound, gotExpected := strings.Join(found, "\n"), strings.Join(expected, "\n")
+			if gotFound != tc.found || len(found) != lineCount(tc.found) {
+				t.Errorf("found side = %q, want the lines of %q\n%s", found, tc.found, out)
+			}
+			if gotExpected != tc.expected || len(expected) != lineCount(tc.expected) {
+				t.Errorf("expected side = %q, want the lines of %q\n%s", expected, tc.expected, out)
+			}
+			if context != tc.wantContext {
+				t.Errorf("%d context lines, want %d\n%s", context, tc.wantContext, out)
+			}
+		})
+	}
+}
+
+// lineCount is how many lines text holds: none for "", else one more than its
+// newlines. Computed here rather than with splitLines, which buildDiff uses.
+func lineCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	return strings.Count(text, "\n") + 1
+}
+
+// splitDiff checks buildDiff's three header lines and splits the body into
+// each side's lines (context lines belong to both), counting the context.
+func splitDiff(t *testing.T, out string) (found, expected []string, context int) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) < 3 || lines[0] != "--- a/f.go" ||
+		!strings.HasPrefix(lines[1], "+++ b/f.go") || !strings.HasPrefix(lines[2], "@@ ") {
+		t.Fatalf("missing ---/+++/@@ header:\n%s", out)
+	}
+	for _, l := range lines[3:] {
+		switch {
+		case strings.HasPrefix(l, " "):
+			found, expected = append(found, l[1:]), append(expected, l[1:])
+			context++
+		case strings.HasPrefix(l, "-"):
+			found = append(found, l[1:])
+		case strings.HasPrefix(l, "+"):
+			expected = append(expected, l[1:])
+		default:
+			t.Fatalf("line %q has no diff prefix:\n%s", l, out)
+		}
+	}
+	return found, expected, context
+}

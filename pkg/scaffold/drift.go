@@ -28,7 +28,7 @@ const guardBlockInsertion = "\n\t// An unmatched token leaves the selected comma
 	"\tif sel := r.Command.GetSelected(); sel.Exec == nil {\n" +
 	"\t\tif rest := sel.Flags.GetArgs(); len(rest) > 0 {\n" +
 	"\t\t\t_, _ = fmt.Fprintf(stderr, \"\\n%s\\n\", ffhelp.Command(sel))\n" +
-	"\t\t\treturn fmt.Errorf(\"%s: unknown subcommand %q\", sel.Name, rest[0])\n" +
+	"\t\t\treturn &ROOT_PKG.UsageError{Err: fmt.Errorf(\"%s: unknown subcommand %q\", sel.Name, rest[0])}\n" +
 	"\t\t}\n" +
 	"\t}\n" +
 	"\n\tif err := r.Command.Run(ctx); err != nil {"
@@ -69,15 +69,18 @@ type sourceInfo struct {
 	mainHasSignal   bool
 	mainHasRunFunc  bool
 	mainPassesStdin bool
+	mainExitsUsage  bool
 	// cmd/cmd.go properties
 	cmdHasStdinParam bool
 	cmdPassesStdin   bool
 	cmdHasEnvPrefix  bool
 	cmdHasGuard      bool
+	cmdHelpOnUsage   bool
 	// cmd/root/root.go properties
 	rootHasStdinField bool
 	rootHasStdinParam bool
 	rootAssignsStdin  bool
+	rootHasUsageError bool
 	// cmd/version/version.go properties
 	versionHasJSONFlag                   bool
 	versionHasTabwriter                  bool
@@ -87,6 +90,17 @@ type sourceInfo struct {
 	versionHasOptionConstructors         bool
 	// cmd/mango/mango.go → man.go.tmpl properties
 	mangoHasSectionField bool
+}
+
+// check is one structural property compared between a climax source file and
+// its template. patch, when set, is the fix ApplyFixes writes into the
+// template if the source has the property and the template does not.
+type check struct {
+	tmpl   string
+	prop   string
+	inSrc  bool
+	inTmpl bool
+	patch  *templatePatch
 }
 
 // defaultTemplates returns the embedded scaffold templates.
@@ -149,13 +163,9 @@ func DetectDrift(climaxDir string) ([]DriftItem, error) {
 	src := sourceInfo{
 		mainHasSignal:  astHasCall(main, "main", "NotifyContext"),
 		mainHasRunFunc: astHasFuncDecl(main, "run"),
-		mainPassesStdin: astCallPassesIdent(
-			main,
-			"run",
-			"cmd",
-			"Run",
-			"Stdin",
-		),
+		mainPassesStdin: astCallPassesIdent(main, "run", "cmd", "Run", "Stdin") ||
+			astCallPassesIdent(main, "run", "cmd", "Run", "stdin"),
+		mainExitsUsage:   astCallPassesIdent(main, "run", "errors", "Is", "ErrUsage"),
 		cmdHasStdinParam: astFuncHasIOReaderParam(cmdFile, "Run"),
 		cmdPassesStdin: astCallPassesIdent(
 			cmdFile,
@@ -166,9 +176,11 @@ func DetectDrift(climaxDir string) ([]DriftItem, error) {
 		),
 		cmdHasEnvPrefix:    astHasCall(cmdFile, "Run", "WithEnvVarPrefix"),
 		cmdHasGuard:        astHasCall(cmdFile, "Run", "GetArgs"),
+		cmdHelpOnUsage:     astCallPassesIdent(cmdFile, "Run", "errors", "Is", "ErrUsage"),
 		rootHasStdinField:  astStructHasField(rootFile, "Config", "Stdin"),
 		rootHasStdinParam:  astFuncHasIOReaderParam(rootFile, "New"),
 		rootAssignsStdin:   astFuncAssignsField(rootFile, "New", "Stdin"),
+		rootHasUsageError:  astHasTypeDecl(rootFile, "UsageError"),
 		versionHasJSONFlag: astStructHasField(versionFile, "Config", "JSON"),
 		versionHasTabwriter: strings.Contains(
 			string(versionSrc),
@@ -239,15 +251,37 @@ func ApplyFixes(climaxDir string, items []DriftItem) error {
 // ─── Checks ──────────────────────────────────────────────────────────────────
 
 func runChecks(src sourceInfo, tmpl *templateSet) []DriftItem {
-	type check struct {
-		tmpl   string
-		prop   string
-		inSrc  bool
-		inTmpl bool
-		patch  *templatePatch
+	var checks []check
+	for _, group := range []func(*sourceInfo, *templateSet) []check{
+		mainChecks, cmdChecks, rootChecks, versionChecks, manChecks,
+	} {
+		checks = append(checks, group(&src, tmpl)...)
 	}
 
-	checks := []check{
+	var items []DriftItem
+	for _, c := range checks {
+		if c.inSrc == c.inTmpl {
+			continue // in sync
+		}
+		item := DriftItem{
+			Template:   c.tmpl,
+			Property:   c.prop,
+			InSource:   presence(c.inSrc),
+			InTemplate: presence(c.inTmpl),
+		}
+		// Only attach patch when source has the property but template doesn't;
+		// removing things from templates is a manual decision.
+		if c.inSrc && !c.inTmpl {
+			item.patch = c.patch
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// mainChecks compares main.go with its template.
+func mainChecks(src *sourceInfo, tmpl *templateSet) []check {
+	return []check{
 		{
 			tmpl:   "main",
 			prop:   "signal.NotifyContext",
@@ -264,6 +298,7 @@ func runChecks(src sourceInfo, tmpl *templateSet) []DriftItem {
 						`"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"`,
@@ -284,19 +319,24 @@ func runChecks(src sourceInfo, tmpl *templateSet) []DriftItem {
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM,
 	)
-	code := run(ctx)
+	code := run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
 
 // run is intentionally separated from main to improve testability. Please preserve this comment.
-func run(ctx context.Context) int {
-	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+func run(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+) int {
+	err := cmd.Run(ctx, args[1:], stdin, stdout, stderr)
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
 		return exitSuccess
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %+v\n", err)
 		return exitFail
 	}
 }`,
@@ -316,6 +356,18 @@ func run(ctx context.Context) int {
 			inSrc:  src.mainPassesStdin,
 			inTmpl: strings.Contains(tmpl.main, "os.Stdin"),
 		},
+		{
+			tmpl:   "main",
+			prop:   "usage errors exit 2",
+			inSrc:  src.mainExitsUsage,
+			inTmpl: strings.Contains(tmpl.main, "errors.Is(err, ROOT_PKG.ErrUsage)"),
+		},
+	}
+}
+
+// cmdChecks compares the dispatcher (cmd/cmd.go) with its template.
+func cmdChecks(src *sourceInfo, tmpl *templateSet) []check {
+	return []check{
 		{
 			tmpl:   "cmd",
 			prop:   "stdin io.Reader parameter in Run",
@@ -374,6 +426,18 @@ func run(ctx context.Context) int {
 			},
 		},
 		{
+			tmpl:   "cmd",
+			prop:   "help printed only for errors matching ErrUsage",
+			inSrc:  src.cmdHelpOnUsage,
+			inTmpl: strings.Contains(tmpl.cmd, "errors.Is(err, ROOT_PKG.ErrUsage)"),
+		},
+	}
+}
+
+// rootChecks compares the root config package with its template.
+func rootChecks(src *sourceInfo, tmpl *templateSet) []check {
+	return []check{
+		{
 			tmpl:   "root",
 			prop:   "Stdin io.Reader field in Config",
 			inSrc:  src.rootHasStdinField,
@@ -418,6 +482,18 @@ func run(ctx context.Context) int {
 				},
 			},
 		},
+		{
+			tmpl:   "root",
+			prop:   "UsageError type and ErrUsage sentinel",
+			inSrc:  src.rootHasUsageError,
+			inTmpl: strings.Contains(tmpl.root, "type UsageError struct"),
+		},
+	}
+}
+
+// versionChecks compares cmd/version/version.go with its template.
+func versionChecks(src *sourceInfo, tmpl *templateSet) []check {
+	return []check{
 		{
 			tmpl:   "version",
 			prop:   "JSON flag in Config",
@@ -473,6 +549,12 @@ func run(ctx context.Context) int {
 				strings.Contains(tmpl.version, "func WithASCIIName(") &&
 				strings.Contains(tmpl.version, "func WithBuiltBy("),
 		},
+	}
+}
+
+// manChecks compares cmd/mango/mango.go against man.go.tmpl with its template.
+func manChecks(src *sourceInfo, tmpl *templateSet) []check {
+	return []check{
 		{
 			tmpl:   "man",
 			prop:   "Section int field in Config",
@@ -489,26 +571,6 @@ func run(ctx context.Context) int {
 			},
 		},
 	}
-
-	var items []DriftItem
-	for _, c := range checks {
-		if c.inSrc == c.inTmpl {
-			continue // in sync
-		}
-		item := DriftItem{
-			Template:   c.tmpl,
-			Property:   c.prop,
-			InSource:   presence(c.inSrc),
-			InTemplate: presence(c.inTmpl),
-		}
-		// Only attach patch when source has the property but template doesn't;
-		// removing things from templates is a manual decision.
-		if c.inSrc && !c.inTmpl {
-			item.patch = c.patch
-		}
-		items = append(items, item)
-	}
-	return items
 }
 
 func presence(b bool) string {

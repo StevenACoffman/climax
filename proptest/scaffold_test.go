@@ -56,9 +56,9 @@ func pkgName(taken ...string) *rapid.Generator[string] {
 // as a property: whatever combination of init options and features is chosen,
 // and however many commands are added afterwards (nested or not, crossing the
 // point where registrations move into register()), the result is a climax app
-// that `climax lint` reports no structural drift on, and every Go file in it
-// is gofmt-clean — imports sorted included, whatever the module path sorts
-// next to.
+// that `climax lint` reports no structural drift on and whose Go files are all
+// gofmt-clean (imports sorted included, whatever the module path sorts next
+// to). That holds whether or not the dispatcher keeps its marker comments.
 func TestScaffold_initThenAddStaysClean(t *testing.T) {
 	base := t.TempDir()
 	rapid.Check(t, func(t *rapid.T) {
@@ -79,6 +79,11 @@ func TestScaffold_initThenAddStaysClean(t *testing.T) {
 		opts := drawInitOptions(t, importPrefix)
 		if _, err := scaffold.InitApp(dir, opts); err != nil {
 			t.Fatalf("InitApp(%+v): %v", opts, err)
+		}
+		// Without its marker comments the dispatcher is edited by AST offsets
+		// instead of by text; both must give the same guarantees.
+		if rapid.Bool().Draw(t, "stripMarkers") {
+			stripMarkers(t, filepath.Join(dir, "cmd", "cmd.go"))
 		}
 		addCommands(t, dir, importPrefix, opts.RootPkg)
 
@@ -177,6 +182,25 @@ func assertGofmtClean(t *rapid.T, dir string) {
 		return nil
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stripMarkers removes both climax marker comments from the dispatcher at path.
+func stripMarkers(t *rapid.T, path string) {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for line := range strings.SplitSeq(string(src), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != scaffold.ImportsMarker && trimmed != scaffold.CommandsMarker {
+			kept = append(kept, line)
+		}
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

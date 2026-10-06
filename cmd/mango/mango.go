@@ -81,7 +81,9 @@ Environment variable overrides (CLIMAX_ prefix):
 
 func (cfg *Config) exec(_ context.Context, args []string) error {
 	if cfg.Section < 1 || cfg.Section > 8 {
-		return fmt.Errorf("mango: --section must be between 1 and 8, got %d", cfg.Section)
+		return &root.UsageError{
+			Err: fmt.Errorf("mango: --section must be between 1 and 8, got %d", cfg.Section),
+		}
 	}
 
 	path := "."

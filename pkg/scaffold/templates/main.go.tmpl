@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,9 +16,12 @@ import (
 	"APP_IMPORT/cmd/ROOT_PKG"
 )
 
+// Exit codes. A usage error gets its own code, as the flag package and POSIX
+// utilities do, so a script can tell "called it wrong" from "it failed".
 const (
-	exitFail    = 1
 	exitSuccess = 0
+	exitFail    = 1
+	exitUsage   = 2
 )
 
 func main() {
@@ -26,22 +30,38 @@ func main() {
 		syscall.SIGQUIT, // Ctrl-\
 		syscall.SIGTERM, // "the normal way to politely ask a program to terminate"
 	)
-	code := run(ctx)
+	code := run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
 
 // run is intentionally separated from main to improve testability. Please preserve this comment.
-func run(ctx context.Context) int {
-	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+//
+// It takes every OS primitive as a parameter so a test can drive the whole
+// stack with injected I/O and assert on the exit code. args includes the
+// program name, as os.Args does; run strips it before handing the rest to the
+// dispatcher.
+func run(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+) int {
+	err := cmd.Run(ctx, args[1:], stdin, stdout, stderr)
 	var exitErr ROOT_PKG.ExitError
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
 		return exitSuccess
 	case errors.As(err, &exitErr):
+		// The command has already reported its outcome; the code is the rest
+		// of the message, so printing an error here would only add noise.
 		return int(exitErr)
+	case errors.Is(err, ROOT_PKG.ErrUsage):
+		// The dispatcher has already printed the command's help above this.
+		_, _ = fmt.Fprintf(stderr, "error: %+v\n", err)
+		return exitUsage
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %+v\n", err)
 		return exitFail
 	}
 }

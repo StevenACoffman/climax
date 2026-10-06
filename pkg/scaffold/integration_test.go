@@ -3,6 +3,7 @@ package scaffold_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -472,4 +473,134 @@ func stampFromLdflags(bi *debug.BuildInfo) version.Stamp {
 		}
 	}
 	return stamp
+}
+
+// TestGoBuild_helpOnlyForUsageErrors builds a generated app and checks it keeps
+// the rules climax's own does: a usage error prints the command's help and
+// exits 2, a runtime failure prints only its message and exits 1, and a bare
+// invocation exits 0 quietly.
+//
+// Skipped in short mode and without the go tool: it runs "go mod tidy" (which
+// may hit the network) and builds the generated app.
+func TestGoBuild_helpOnlyForUsageErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go tool not available:", err)
+	}
+	bin := buildUsageApp(t, goTool)
+
+	cases := map[string]struct {
+		args     []string
+		wantExit int
+		wantHelp bool
+		wantMsg  string
+	}{
+		"usage error":        {[]string{"serve"}, 2, true, "serve: address required"},
+		"runtime error":      {[]string{"serve", ":80"}, 1, false, "serve: connection refused"},
+		"unknown subcommand": {[]string{"nosuch"}, 2, true, `unknown subcommand "nosuch"`},
+		"bare invocation":    {nil, 0, false, ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			exit, stderr := runBinary(t, bin, tc.args...)
+			if exit != tc.wantExit {
+				t.Errorf("exit %d, want %d\nstderr:\n%s", exit, tc.wantExit, stderr)
+			}
+			if got := strings.Contains(stderr, "COMMAND\n"); got != tc.wantHelp {
+				t.Errorf("help printed = %v, want %v\nstderr:\n%s", got, tc.wantHelp, stderr)
+			}
+			if !strings.Contains(stderr, tc.wantMsg) {
+				t.Errorf("stderr does not mention %q:\n%s", tc.wantMsg, stderr)
+			}
+		})
+	}
+}
+
+// buildUsageApp generates an app with one command, serve, that fails as a
+// usage error without an argument and as a runtime error with one, and
+// returns the path of the built binary.
+func buildUsageApp(t *testing.T, goTool string) string {
+	t.Helper()
+	dir := t.TempDir()
+	const importPrefix = "github.com/example/usageapp"
+	run(t, dir, goTool, "mod", "init", importPrefix)
+	if _, err := scaffold.InitApp(
+		dir,
+		scaffold.InitOptions{ImportPrefix: importPrefix},
+	); err != nil {
+		t.Fatalf("InitApp: %v", err)
+	}
+	// AddCommand registers serve in the dispatcher; its body is then replaced.
+	if _, _, err := scaffold.AddCommand(
+		dir,
+		"serve",
+		importPrefix,
+		scaffold.AddOptions{},
+	); err != nil {
+		t.Fatalf("AddCommand: %v", err)
+	}
+	serve := `package serve
+
+import (
+	"context"
+	"errors"
+
+	"github.com/peterbourgon/ff/v4"
+
+	"` + importPrefix + `/cmd/root"
+)
+
+type Config struct {
+	*root.Config
+	Flags   *ff.FlagSet
+	Command *ff.Command
+}
+
+func New(parent *root.Config) *Config {
+	var cfg Config
+	cfg.Config = parent
+	cfg.Flags = ff.NewFlagSet("serve").SetParent(parent.Flags)
+	cfg.Command = &ff.Command{Name: "serve", Usage: "usageapp serve <addr>", Flags: cfg.Flags, Exec: cfg.exec}
+	parent.Command.Subcommands = append(parent.Command.Subcommands, cfg.Command)
+	return &cfg
+}
+
+func (cfg *Config) exec(_ context.Context, args []string) error {
+	if len(args) == 0 {
+		return &root.UsageError{Err: errors.New("serve: address required")}
+	}
+	return errors.New("serve: connection refused")
+}
+`
+	if err := os.WriteFile(
+		filepath.Join(dir, "cmd", "serve", "serve.go"),
+		[]byte(serve),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, goTool, "mod", "tidy")
+	bin := filepath.Join(dir, "usageapp")
+	run(t, dir, goTool, "build", "-o", bin, ".")
+	return bin
+}
+
+// runBinary runs bin with args and returns its exit code and stderr.
+func runBinary(t *testing.T, bin string, args ...string) (exit int, stderr string) {
+	t.Helper()
+	//nolint:gosec // G204: runs a binary this test built
+	c := exec.CommandContext(context.Background(), bin, args...)
+	var buf strings.Builder
+	c.Stderr = &buf
+	err := c.Run()
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		return exitErr.ExitCode(), buf.String()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return 0, buf.String()
 }

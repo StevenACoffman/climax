@@ -149,16 +149,18 @@ func (cfg *Config) exec(_ context.Context, args []string) error {
 	}
 
 	if cfg.EnvPrefix != "" && cfg.NoEnvPrefix {
-		return errors.New("init: --env-prefix and --no-env-prefix are mutually exclusive")
+		return &root.UsageError{
+			Err: errors.New("init: --env-prefix and --no-env-prefix are mutually exclusive"),
+		}
 	}
 	if cfg.Name != "" {
 		if err := scaffold.ValidateCliName(cfg.Name); err != nil {
-			return fmt.Errorf("init: --name: %w", err)
+			return &root.UsageError{Err: fmt.Errorf("init: --name: %w", err)}
 		}
 	}
 	if cfg.RootPkg != "" {
 		if err := scaffold.ValidateIdent(cfg.RootPkg); err != nil {
-			return fmt.Errorf("init: --root-pkg: %w", err)
+			return &root.UsageError{Err: fmt.Errorf("init: --root-pkg: %w", err)}
 		}
 	}
 

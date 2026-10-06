@@ -245,7 +245,7 @@ When no issues are found:
 
 | File | Properties |
 | ---- | ---------- |
-| `main.go` | `signal.NotifyContext` for graceful shutdown; separate `run(ctx)` function for testability; `os.Stdin` passed explicitly to `cmd.Run` |
+| `main.go` | `signal.NotifyContext` for graceful shutdown; separate `run` function, taking args and I/O as parameters, for testability; stdin passed explicitly to `cmd.Run` |
 | `cmd/cmd.go` | `stdin io.Reader` parameter in `Run`; `stdin` forwarded to `root.New` |
 | `cmd/<root>/<root>.go` | `Stdin io.Reader` field in `Config`; `stdin io.Reader` parameter in `New`; `cfg.Stdin = stdin` assignment |
 
@@ -394,25 +394,27 @@ func main() {
 		syscall.SIGQUIT, // Ctrl-\
 		syscall.SIGTERM, // polite termination request
 	)
-	code := run(ctx)
+	code := run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
 ```
 
-`run` is intentionally separated from `main` so test harnesses can call it directly with a controlled context.
+`run` is intentionally separated from `main` and takes every OS primitive as a parameter, so a test can call it with its own arguments, buffers for stdin/stdout/stderr, and a controlled context, then assert on the exit code it returns.
 
 ### Dispatcher error handling
 
-The generated dispatcher in `cmd/cmd.go` distinguishes three error paths:
+The generated dispatcher in `cmd/cmd.go` distinguishes five outcomes:
 
-| Returned from exec | What happens |
-| ------------------ | ------------ |
-| `nil`, `ff.ErrHelp`, `ff.ErrNoExec` | Exit 0. `ff.ErrNoExec` fires when a parent command is invoked without a subcommand — help is shown but the process exits cleanly. |
-| `root.ExitError(N)` | Exit N. No `"error: ..."` line is printed. Use this when the command has already reported the outcome (e.g. lint found issues). |
-| Any other `error` | The selected command's help is printed to stderr, then `"error: <message>"`, then exit 1. |
+| Returned from exec                           | What happens                                                                                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `nil`, `ff.ErrNoExec`                        | Exit 0. `ff.ErrNoExec` fires when a parent command is invoked without a subcommand; nothing is printed.                         |
+| `ff.ErrHelp` (`--help`)                      | The selected command's help is printed to stderr, then exit 0.                                                                  |
+| `*root.UsageError` (matches `root.ErrUsage`) | The selected command's help is printed to stderr, then `"error: <message>"`, then exit 2.                                       |
+| `root.ExitError(N)`                          | Exit N. No `"error: ..."` line is printed. Use this when the command has already reported the outcome (e.g. lint found issues). |
+| Any other `error`                            | `"error: <message>"`, then exit 1. No help: the command line was fine, so help would only bury the message.                     |
 
-Parse errors (bad flags) follow the same path as other errors: help is shown before the error message.
+Parse failures (an unknown flag, a bad flag value) and an unknown subcommand are usage errors too, so they print help.
 
 ### Shared I/O
 
@@ -505,6 +507,22 @@ return root.ExitError(1) // exit 1, no "error:" printed
 ```
 
 Use this when the command has already communicated its outcome through its own output — for example, `climax lint` prints the diff before returning `ExitError(1)`, so a redundant error line would be noise.
+
+### Usage errors
+
+Return a `*root.UsageError` when the command line is wrong (a missing or invalid argument, conflicting flags), so the dispatcher prints the command's help above the message:
+
+```go
+// In any command's exec function:
+if len(args) == 0 {
+    return &root.UsageError{Err: errors.New("serve: address required")}
+}
+if err := validate(args[0]); err != nil {
+    return &root.UsageError{Err: fmt.Errorf("serve: %w", err)}
+}
+```
+
+It exits 2, where a runtime failure exits 1, so a script can tell "called it wrong" from "it failed". Every other error is reported without help. `errors.Is(err, root.ErrUsage)` tells the two apart; `errors.AsType[*root.UsageError](err)` recovers the details.
 
 ## Version embedding
 
