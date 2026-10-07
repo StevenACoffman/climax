@@ -15,12 +15,13 @@ env:
   GOPRIVATE: "github.com/StevenACoffman"
   GOFLAGS: "-trimpath"
   GOLANGCI_LINT_VERSION: latest
-permissions:
-  contents: read
 jobs:
   tidy:
     name: go mod tidy is committed
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -39,6 +40,11 @@ jobs:
   test:
     name: Unit tests (race)
     runs-on: ubuntu-latest
+    # The suite includes integration tests that build generated apps; a few
+    # minutes normally. The ceiling is against a hung test, not a target.
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -67,6 +73,9 @@ jobs:
   vulncheck:
     name: Vulnerability scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:

@@ -8,6 +8,9 @@ goreleaser = "latest"
 "go:github.com/StevenACoffman/benchgate" = "latest"
 # Mutation testing. Needs a Go 1.26+ toolchain to run, which the `go = "latest"` above gives.
 "go:github.com/quality-gates/mutago/v2/cmd/mutago" = "latest"
+# Known-vulnerability scan of the module and its dependencies; CI's vulncheck job
+# runs it after mise-action installs these tools.
+"go:golang.org/x/vuln/cmd/govulncheck" = "latest"
 # supply-chain tooling: syft generates the SBOM, cosign signs the checksum.
 syft = "latest"
 cosign = "latest"
