@@ -1,9 +1,8 @@
 // Package scaffold – features.go implements the opt-in template features
 // selected by `climax init` flags (--jsonl, --global-flags, --logger,
 // --getenv). Each feature is applied as a pure string transform over the
-// already-expanded base template output, so the default (no-feature) scaffold
-// stays byte-identical and the base templates remain the single source of
-// truth for `climax lint` and `climax update`.
+// already-expanded base template output, so the base templates remain the
+// single source of truth for `climax lint` and `climax update`.
 package scaffold
 
 import (
@@ -77,8 +76,7 @@ func featureFiles(f Features, rootPkg string) []fileEntry {
 // applyFeatures applies the enabled opt-in feature transforms to the expanded
 // content of a scaffold file (identified by its app-relative path) and returns
 // the possibly-rewritten, gofmt-formatted source. When no enabled feature
-// touches the file, content is returned unchanged and unformatted, preserving
-// the byte-for-byte default scaffold.
+// touches the file, content is returned unchanged; writeFile formats it either way.
 func applyFeatures(content, rel string, f Features, ctx featureCtx) (string, error) {
 	if !f.Any() {
 		return content, nil
@@ -101,10 +99,17 @@ func applyFeatures(content, rel string, f Features, ctx featureCtx) (string, err
 // applyMainFeatures rewrites main.go for the enabled features.
 func applyMainFeatures(content string, f Features) string {
 	if f.Getenv {
-		// Thread os.Getenv into the dispatcher call so New/Run can inject it.
+		// Thread os.Getenv through run into the dispatcher call so New/Run can
+		// inject it, and a test of run can pass its own.
 		content = strings.Replace(content,
-			"cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)",
-			"cmd.Run(ctx, os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr)", 1)
+			"run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr)",
+			"run(ctx, os.Args, os.Getenv, os.Stdin, os.Stdout, os.Stderr)", 1)
+		content = strings.Replace(content,
+			"\targs []string,\n\tstdin io.Reader,",
+			"\targs []string,\n\tgetenv func(string) string,\n\tstdin io.Reader,", 1)
+		content = strings.Replace(content,
+			"cmd.Run(ctx, args[1:], stdin, stdout, stderr)",
+			"cmd.Run(ctx, args[1:], getenv, stdin, stdout, stderr)", 1)
 	}
 	return content
 }

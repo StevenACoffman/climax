@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -48,13 +49,26 @@ func (i Info) ImportPath(dir string) (string, error) {
 	return i.Module + "/" + filepath.ToSlash(rel), nil
 }
 
+// parseModule returns the path from the module directive. It accepts the forms
+// the go command does: any whitespace after the keyword, a trailing comment,
+// and a quoted path.
 func parseModule(data []byte) (string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if after, ok := strings.CutPrefix(line, "module "); ok {
-			return strings.TrimSpace(after), nil
+		line, _, _ := strings.Cut(scanner.Text(), "//")
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "module" {
+			continue
 		}
+		mod := fields[1]
+		if mod[0] == '"' || mod[0] == '`' {
+			unquoted, err := strconv.Unquote(mod)
+			if err != nil {
+				return "", fmt.Errorf("invalid quoted module path %s: %w", mod, err)
+			}
+			mod = unquoted
+		}
+		return mod, nil
 	}
 	return "", errors.New("module directive not found in go.mod")
 }

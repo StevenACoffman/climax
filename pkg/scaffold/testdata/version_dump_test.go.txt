@@ -1,0 +1,67 @@
+// Written into a generated app's cmd/version by
+// TestVersionTemplate_matchesClimaxOnRecordedBuilds, with APP_IMPORT replaced.
+package version_test
+
+import (
+	"encoding/json"
+	"flag"
+	"os"
+	"path/filepath"
+	"runtime/debug"
+	"strings"
+	"testing"
+
+	"APP_IMPORT/cmd/version"
+)
+
+var out = flag.String("out", "", "where to write the JSON report")
+
+func TestDump(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("testdata", "buildinfo", "*.txt"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no fixtures: %v", err)
+	}
+	report := map[string]*version.Info{}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bi, err := debug.ParseBuildInfo(string(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		report[strings.TrimSuffix(filepath.Base(f), ".txt")] = version.GetVersionInfoFrom(bi, stampFromLdflags(bi))
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(*out, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stampFromLdflags recovers the link-time stamp from a recorded -ldflags setting.
+func stampFromLdflags(bi *debug.BuildInfo) version.Stamp {
+	stamp := version.Stamp{Version: "dev"}
+	set := map[string]*string{
+		"Version": &stamp.Version, "Commit": &stamp.Commit, "CommitDate": &stamp.CommitDate,
+		"TreeState": &stamp.TreeState, "BuiltBy": &stamp.BuiltBy,
+	}
+	for _, s := range bi.Settings {
+		if s.Key != "-ldflags" {
+			continue
+		}
+		for _, field := range strings.Fields(s.Value) {
+			target, value, ok := strings.Cut(field, "=")
+			if !ok || !strings.Contains(target, "/cmd/version.") {
+				continue
+			}
+			if p, ok := set[target[strings.LastIndex(target, ".")+1:]]; ok {
+				*p = value
+			}
+		}
+	}
+	return stamp
+}

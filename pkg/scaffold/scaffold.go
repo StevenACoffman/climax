@@ -4,8 +4,11 @@ package scaffold
 import (
 	"errors"
 	"fmt"
+	"go/format"
+	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -417,15 +420,17 @@ func registerViaMarkers(info *dispatcherInfo, content, name, importPrefix, paren
 		// expression statement to a captured assignment if needed, then insert
 		// the child call on the line immediately following.
 		parentCallPattern := "\t" + parentPkg + ".New("
-		if !strings.Contains(content, parentCallPattern) {
+		parentCfgVar := parentPkg + "Cfg"
+		capturedPattern := "\t" + parentCfgVar + " := " + parentPkg + ".New("
+		// The parent's first child promoted its call to a captured assignment,
+		// so a second child finds only the captured form.
+		hasCaptured := strings.Contains(content, capturedPattern)
+		if !hasCaptured && !strings.Contains(content, parentCallPattern) {
 			return fmt.Errorf(
 				"parent command %q not found in dispatcher; add it with 'climax add %s' first",
 				parentPkg, parentPkg)
 		}
-
-		parentCfgVar := parentPkg + "Cfg"
-		capturedPattern := "\t" + parentCfgVar + " := " + parentPkg + ".New("
-		if !strings.Contains(content, capturedPattern) {
+		if !hasCaptured {
 			content = strings.Replace(content, parentCallPattern,
 				"\t"+parentCfgVar+" := "+parentPkg+".New(", 1)
 		}
@@ -443,13 +448,54 @@ func registerViaMarkers(info *dispatcherInfo, content, name, importPrefix, paren
 		if lineEnd == -1 {
 			return fmt.Errorf("unexpected: no newline after parent registration in %s", info.path)
 		}
-		insertPos := idx + lineEnd + 1
+		insertPos := afterDescendants(content, idx+lineEnd+1, parentCfgVar)
 		callLine := fmt.Sprintf("\t%s.New(%s)\n", name, parentCfgVar)
 		content = content[:insertPos] + callLine + content[insertPos:]
 	}
 
-	if err := os.WriteFile(info.path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("writing %s: %w", info.path, err)
+	return writeDispatcher(info.path, []byte(content))
+}
+
+// childRegistration matches a line that registers a command under a parent
+// config: `c.New(aCfg)`, or `bCfg := b.New(aCfg)` once b has children of its
+// own. The groups are the captured config (if any) and the config passed in.
+var childRegistration = regexp.MustCompile(`^\s*(?:(\w+)\s*:=\s*)?\w+\.New\((\w+)\)\s*$`)
+
+// afterDescendants returns the offset just past the registrations that follow
+// a parent's registration line at pos and belong under it: those passed
+// parentCfg, and, depth-first, those passed the config of one of them.
+// Inserting a new child there keeps siblings in the order they were added, so
+// --help lists them that way, instead of each new child landing directly under
+// its parent, ahead of the others.
+func afterDescendants(content string, pos int, parentCfg string) int {
+	under := map[string]bool{parentCfg: true}
+	for pos < len(content) {
+		end := strings.IndexByte(content[pos:], '\n')
+		if end < 0 {
+			return pos
+		}
+		m := childRegistration.FindStringSubmatch(content[pos : pos+end])
+		if len(m) < 3 || !under[m[2]] {
+			return pos
+		}
+		if m[1] != "" {
+			under[m[1]] = true
+		}
+		pos += end + 1
+	}
+	return pos
+}
+
+// writeDispatcher gofmts the edited dispatcher, which sorts the import just
+// spliced in among the others, and writes it back. The marker path does not
+// require the file to parse, so when it does not, the edit is written
+// unformatted rather than refused: the user's own syntax error is theirs to fix.
+func writeDispatcher(path string, src []byte) error {
+	if formatted, err := format.Source(src); err == nil {
+		src = formatted
+	}
+	if err := os.WriteFile(path, src, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil
 }
@@ -489,15 +535,12 @@ func registerViaAST(info *dispatcherInfo, src []byte, name, importPrefix, parent
 			pcr.lineEnd += len(promotion)
 		}
 
-		// Insert the child command call on the line immediately after the parent.
+		// Insert the child after the parent and the children it already has.
 		callLine := fmt.Sprintf("\t%s.New(%s)\n", name, pcr.cfgVar)
-		src = insertAt(src, pcr.lineEnd, callLine)
+		src = insertAt(src, afterDescendants(string(src), pcr.lineEnd, pcr.cfgVar), callLine)
 	}
 
-	if err := os.WriteFile(info.path, src, 0o644); err != nil {
-		return fmt.Errorf("writing %s: %w", info.path, err)
-	}
-	return nil
+	return writeDispatcher(info.path, src)
 }
 
 // readMarker scans content line by line for "// <prefix> <value>" and returns
@@ -520,12 +563,19 @@ func readMarker(content, prefix string) string {
 	return ""
 }
 
-// writeFile creates path (and any needed parent directories), failing if the
-// file already exists.
+// writeFile gofmts content and writes it to path (creating any needed parent
+// directories), failing if the file already exists. Formatting is what sorts
+// the imports: a template cannot order its module-local imports relative to
+// the rest, because their path is the user's.
 func writeFile(path, content string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("file already exists: %s", path)
 	}
+	formatted, err := format.Source([]byte(content))
+	if err != nil {
+		return fmt.Errorf("formatting generated %s: %w", path, err)
+	}
+	content = string(formatted)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating directory: %w", err)
 	}
@@ -565,10 +615,14 @@ func ValidateCliName(name string) error {
 	return nil
 }
 
-// ValidateIdent reports whether name is a valid Go identifier.
+// ValidateIdent reports whether name is a valid Go identifier. Keywords are
+// rejected: the name becomes a package name, and "package func" does not parse.
 func ValidateIdent(name string) error {
 	if name == "" {
 		return errors.New("command name cannot be empty")
+	}
+	if token.IsKeyword(name) {
+		return fmt.Errorf("command name %q is a Go keyword", name)
 	}
 	for i, r := range name {
 		if i == 0 {

@@ -304,5 +304,20 @@ dist/
 # Claude Code — generated skill symlinks (source lives in .agents/skills/)
 .claude/skills/
 
+# Vale - grammar checker and style lint
+.vale
+
 # Rumdl - markdown linter cache
 .rumdl_cache
+
+# Benchmark output saved for comparison.
+*.bench.txt
+
+# rapid writes a reproducer here when a property fails; a local artifact, not a fixture.
+testdata/rapid/
+*/testdata/rapid/
+
+# mutago reports.
+mutago-report.html
+mutago-agentic.json
+mutago-gitlab.json

@@ -1,0 +1,15 @@
+go	go1.27.1
+path	github.com/StevenACoffman/climax
+mod	github.com/StevenACoffman/climax	v0.8.0	h1:/V/mx5lBYxrejteLSTNUxZ1+D1wwTg019N1H75qkvgc=
+dep	github.com/peterbourgon/ff/v4	v4.0.0-beta.1	h1:hV8qRu3V7YfiSMsBSfPfdcznAvPQd3jI5zDddSrDoUc=
+build	-buildmode=exe
+build	-compiler=gc
+build	DefaultGODEBUG=tracebacklabels=0,x509sslcertoverrideplatform=0
+build	CGO_ENABLED=1
+build	CGO_CFLAGS=
+build	CGO_CPPFLAGS=
+build	CGO_CXXFLAGS=
+build	CGO_LDFLAGS=
+build	GOARCH=arm64
+build	GOOS=darwin
+build	GOARM64=v8.0

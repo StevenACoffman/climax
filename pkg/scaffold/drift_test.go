@@ -73,13 +73,17 @@ func syntheticSourceInfoAllPresent() sourceInfo {
 		mainHasSignal:                        true,
 		mainHasRunFunc:                       true,
 		mainPassesStdin:                      true,
+		mainExitsUsage:                       true,
 		cmdHasStdinParam:                     true,
 		cmdPassesStdin:                       true,
 		cmdHasEnvPrefix:                      true,
 		cmdHasGuard:                          true,
+		cmdHelpOnUsage:                       true,
+		cmdHasFlagGuard:                      true,
 		rootHasStdinField:                    true,
 		rootHasStdinParam:                    true,
 		rootAssignsStdin:                     true,
+		rootHasUsageError:                    true,
 		versionHasJSONFlag:                   true,
 		versionHasTabwriter:                  true,
 		versionHasGetVersionInfoFrom:         true,
@@ -1117,5 +1121,108 @@ func TestDetectDrift_roundTrip_versionJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(result), "\tJSON    bool\n") {
 		t.Error("JSON flag not restored in version.go.tmpl after ApplyFixes")
+	}
+}
+
+// TestGuardBlockInsertion_matchesTemplate pins the claim in guardBlockInsertion's
+// comment: it is the guard exactly as cmd.go.tmpl writes it. If the template's
+// guard changes and this constant does not, ApplyFixes would insert a stale
+// guard into the template.
+func TestGuardBlockInsertion_matchesTemplate(t *testing.T) {
+	t.Parallel()
+	for name, text := range map[string]string{
+		"guardBlockInsertion": guardBlockInsertion,
+		// Inserted with a blank line after it; in the template it ends the file.
+		"misplacedFlagFunc": strings.TrimSuffix(misplacedFlagFunc, "\n"),
+		"runDocAnchor":      runDocAnchor,
+	} {
+		if !strings.Contains(cmdTemplate, text) {
+			t.Errorf("%s is not in cmd.go.tmpl verbatim:\n%s", name, text)
+		}
+	}
+}
+
+// TestRunChecks_usageErrorDrift checks both usage-error properties report drift
+// in either direction: climax's own root package or dispatcher changing without
+// the template, and the template changing without climax.
+func TestRunChecks_usageErrorDrift(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		tmplName string
+		prop     string
+		dropSrc  func(*sourceInfo)
+		dropTmpl func(*templateSet)
+	}{
+		"UsageError type": {
+			tmplName: "root",
+			prop:     "UsageError type and ErrUsage sentinel",
+			dropSrc:  func(s *sourceInfo) { s.rootHasUsageError = false },
+			dropTmpl: func(ts *templateSet) {
+				ts.root = strings.Replace(
+					ts.root,
+					"type UsageError struct",
+					"type usageError struct",
+					1,
+				)
+			},
+		},
+		"usage errors exit 2": {
+			tmplName: "main",
+			prop:     "usage errors exit 2",
+			dropSrc:  func(s *sourceInfo) { s.mainExitsUsage = false },
+			dropTmpl: func(ts *templateSet) {
+				ts.main = strings.Replace(ts.main, "errors.Is(err, ROOT_PKG.ErrUsage)", "false", 1)
+			},
+		},
+		"help gated on ErrUsage": {
+			tmplName: "cmd",
+			prop:     "help printed only for errors matching ErrUsage",
+			dropSrc:  func(s *sourceInfo) { s.cmdHelpOnUsage = false },
+			dropTmpl: func(ts *templateSet) {
+				ts.cmd = strings.Replace(
+					ts.cmd,
+					"errors.Is(err, ROOT_PKG.ErrUsage)",
+					"err != nil",
+					1,
+				)
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name+"/source lacks", func(t *testing.T) {
+			t.Parallel()
+			src := syntheticSourceInfoAllPresent()
+			tc.dropSrc(&src)
+			tmpl := defaultTemplates()
+			assertDrift(t, runChecks(src, &tmpl), tc.tmplName, tc.prop, "absent", "present")
+		})
+		t.Run(name+"/template lacks", func(t *testing.T) {
+			t.Parallel()
+			tmpl := defaultTemplates()
+			tc.dropTmpl(&tmpl)
+			assertDrift(t, runChecks(syntheticSourceInfoAllPresent(), &tmpl),
+				tc.tmplName, tc.prop, "present", "absent")
+		})
+	}
+}
+
+// assertDrift fails unless items holds exactly one drift item for tmplName and
+// prop, in the given direction.
+func assertDrift(t *testing.T, items []DriftItem, tmplName, prop, inSrc, inTmpl string) {
+	t.Helper()
+	if len(items) != 1 {
+		t.Fatalf(
+			"got %d drift items, want exactly 1 for %s %q: %+v",
+			len(items),
+			tmplName,
+			prop,
+			items,
+		)
+	}
+	got := items[0]
+	if got.Template != tmplName || got.Property != prop || got.InSource != inSrc ||
+		got.InTemplate != inTmpl {
+		t.Errorf("got %+v, want %s %q with source %s and template %s",
+			got, tmplName, prop, inSrc, inTmpl)
 	}
 }

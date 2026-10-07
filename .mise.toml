@@ -3,9 +3,28 @@ go = "latest"
 golangci-lint = "latest"
 goreleaser = "latest"
 "github:gotestyourself/gotestsum" = "latest"
+# Benchmark regression and coverage gate; the same tool CI runs. It carries its own
+# statistics, so there is no benchstat to install alongside it.
+"go:github.com/StevenACoffman/benchgate" = "latest"
+# Mutation testing. Needs a Go 1.26+ toolchain to run, which the `go = "latest"` above gives.
+"go:github.com/quality-gates/mutago/v2/cmd/mutago" = "latest"
+# Known-vulnerability scan of the module and its dependencies; CI's vulncheck job
+# runs it after mise-action installs these tools.
+"go:golang.org/x/vuln/cmd/govulncheck" = "latest"
+# supply-chain tooling: syft generates the SBOM, cosign signs the checksum.
+syft = "latest"
+cosign = "latest"
 
 [env]
 LOG_LEVEL = "debug"
+
+[tasks.sbom]
+description = "Build the source tarball + SBOM locally (goreleaser snapshot; signing skipped)"
+run = "goreleaser release --snapshot --clean --skip=sign"
+
+[tasks.check]
+description = "Validate the goreleaser configuration"
+run = "goreleaser check"
 
 [tasks.run]
 description = "Run the main application"
@@ -39,3 +58,44 @@ run = "golangci-lint run ./..."
 description = "Run golangci-lint fmt"
 run = "golangci-lint fmt"
 
+[tasks.bench]
+description = "Run the benchmarks once"
+run = "go test ./pkg/... -run=^$ -bench=. -benchmem -benchtime=100ms -count=6"
+
+[tasks."bench:gate"]
+description = "Compare HEAD against the base revision the way CI does (default base HEAD~1; mise run bench:gate --base=main)"
+run = "benchgate check --packages ./pkg/... --metric B/op --metric allocs/op --tolerance 0 --rounds 6 --benchtime 100ms --fail-on-regression"
+
+[tasks."bench:uncommitted"]
+description = "Gate the working tree against the last commit, before committing it"
+run = "benchgate check --packages ./pkg/... --base HEAD --metric B/op --metric allocs/op --tolerance 0 --rounds 6 --benchtime 100ms --fail-on-regression"
+
+[tasks."bench:gaps"]
+description = "Report the code no benchmark reaches, and the benchmark-only statement coverage"
+run = "benchgate check --packages ./pkg/... --base HEAD --rounds 1 --benchtime 10x --warmup 0 --require-benchmark-per-package --report-unreached"
+
+# The property tests are a module of their own, so the root `./...` does not reach them.
+# These tasks are the only thing that runs and lints them locally.
+[tasks.proptest]
+description = "Check the properties, with more attempts than rapid's default"
+dir = "proptest"
+run = "go test ./... -rapid.checks=1000"
+
+[tasks."proptest:lint"]
+description = "Lint the property-test module"
+dir = "proptest"
+run = "golangci-lint run ./..."
+
+# -short skips pkg/scaffold's integration tests (go mod tidy + go vet on a generated app),
+# which would otherwise run once per mutant. Excludes live in .mutago.yml.
+[tasks.mutate]
+description = "Mutate the library packages (pkg/...) and the version logic (cmd/version)"
+run = "mutago --coverage --quiet --test-flags='-short' ./pkg/... ./cmd/version/..."
+
+[tasks."mutate:diff"]
+description = "Mutate only the lines this branch changed (default base origin/HEAD; mise run mutate:diff --git-diff-base=main)"
+run = "mutago --git-diff-lines --quiet --test-flags='-short' ./pkg/... ./cmd/version/..."
+
+[tasks."mutate:survivors"]
+description = "Write mutago-agentic.json listing the mutants no test killed"
+run = "mutago --coverage --quiet --test-flags='-short' --logger-agentic-json ./pkg/... ./cmd/version/..."

@@ -3,7 +3,9 @@ package CMD_NAME
 
 import (
 	"context"
-EXEC_IMPORTS	"github.com/peterbourgon/ff/v4"
+EXEC_IMPORTS
+	"github.com/peterbourgon/ff/v4"
+
 	"APP_IMPORT/cmd/PARENT_PKG"
 )
 
@@ -35,4 +37,6 @@ func New(parent *PARENT_PKG.Config) *Config {
 func (cfg *Config) exec(_ context.Context, _ []string) error {
 	// TODO: implement CMD_FF_NAME.
 	// Rename the second parameter from _ to args to access positional arguments.
+	// Report a mistake in the command line (a missing or invalid argument) as
+	// &ROOT_PKG.UsageError{Err: ...} so the dispatcher shows this command's help.
 EXEC_BODY}

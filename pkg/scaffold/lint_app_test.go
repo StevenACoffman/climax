@@ -218,3 +218,93 @@ func TestLintApp_placeholderHelpIsWarning(t *testing.T) {
 		t.Errorf("warning detail = %q, want mention of the TODO placeholder", warn.Detail)
 	}
 }
+
+// TestLintApp_driftDiff checks the diff `climax lint` prints is a faithful
+// unified diff of real content: read without its "+" lines it is the user's
+// drifted code, read without its "-" lines it is the template's, and the
+// unchanged lines between are shown once as context.
+func TestLintApp_driftDiff(t *testing.T) {
+	t.Parallel()
+	pristine := scaffoldApp(t, "a drift-diff app")
+	drifted := scaffoldApp(t, "a drift-diff app")
+	mainPath := filepath.Join(drifted, "main.go")
+	src, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := bytes.Replace(src, []byte("signal.NotifyContext("), []byte("withoutSignals("), 1)
+	if bytes.Equal(changed, src) {
+		t.Fatal("main.go template no longer calls signal.NotifyContext")
+	}
+	if err := os.WriteFile(mainPath, changed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	iss, ok := findIssue(lintOrFatal(t, drifted), "signal-safe shutdown")
+	if !ok {
+		t.Fatal("expected a main.go drift issue")
+	}
+	found, expected, context := diffSides(t, iss.Detail)
+
+	if !strings.Contains(strings.Join(found, "\n"), "withoutSignals(") ||
+		strings.Contains(strings.Join(found, "\n"), "signal.NotifyContext(") {
+		t.Errorf("found side should show the drifted call only:\n%s", iss.Detail)
+	}
+	if !strings.Contains(strings.Join(expected, "\n"), "signal.NotifyContext(") ||
+		strings.Contains(strings.Join(expected, "\n"), "withoutSignals(") {
+		t.Errorf("expected side should show the template's call only:\n%s", iss.Detail)
+	}
+	if context < 2 {
+		t.Errorf("got %d context lines, want the shared lines shown once:\n%s", context, iss.Detail)
+	}
+	pristineSrc, err := os.ReadFile(filepath.Join(pristine, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSubsequence(t, "found side of the diff", found, string(changed))
+	assertSubsequence(t, "expected side of the diff", expected, string(pristineSrc))
+}
+
+// diffSides splits a buildDiff body into the lines of each side (context lines
+// belong to both) and counts the context lines. The three header lines are
+// skipped.
+func diffSides(t *testing.T, detail string) (found, expected []string, context int) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(detail, "\n"), "\n")
+	if len(lines) < 3 || !strings.HasPrefix(lines[0], "--- ") ||
+		!strings.HasPrefix(lines[1], "+++ ") {
+		t.Fatalf("not a unified diff:\n%s", detail)
+	}
+	for _, l := range lines[3:] {
+		switch {
+		case strings.HasPrefix(l, " "):
+			found = append(found, l[1:])
+			expected = append(expected, l[1:])
+			context++
+		case strings.HasPrefix(l, "-"):
+			found = append(found, l[1:])
+		case strings.HasPrefix(l, "+"):
+			expected = append(expected, l[1:])
+		default:
+			t.Fatalf("diff line %q has no -, + or space prefix:\n%s", l, detail)
+		}
+	}
+	return found, expected, context
+}
+
+// assertSubsequence fails unless lines appear in text as whole lines, in order.
+func assertSubsequence(t *testing.T, what string, lines []string, text string) {
+	t.Helper()
+	have := strings.Split(text, "\n")
+	i := 0
+	for _, l := range lines {
+		for i < len(have) && have[i] != l {
+			i++
+		}
+		if i == len(have) {
+			t.Errorf("%s: line %q is missing or out of order", what, l)
+			return
+		}
+		i++
+	}
+}

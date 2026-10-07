@@ -245,7 +245,7 @@ When no issues are found:
 
 | File | Properties |
 | ---- | ---------- |
-| `main.go` | `signal.NotifyContext` for graceful shutdown; separate `run(ctx)` function for testability; `os.Stdin` passed explicitly to `cmd.Run` |
+| `main.go` | `signal.NotifyContext` for graceful shutdown; separate `run` function, taking args and I/O as parameters, for testability; stdin passed explicitly to `cmd.Run` |
 | `cmd/cmd.go` | `stdin io.Reader` parameter in `Run`; `stdin` forwarded to `root.New` |
 | `cmd/<root>/<root>.go` | `Stdin io.Reader` field in `Config`; `stdin io.Reader` parameter in `New`; `cfg.Stdin = stdin` assignment |
 
@@ -394,25 +394,27 @@ func main() {
 		syscall.SIGQUIT, // Ctrl-\
 		syscall.SIGTERM, // polite termination request
 	)
-	code := run(ctx)
+	code := run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
 ```
 
-`run` is intentionally separated from `main` so test harnesses can call it directly with a controlled context.
+`run` is intentionally separated from `main` and takes every OS primitive as a parameter, so a test can call it with its own arguments, buffers for stdin/stdout/stderr, and a controlled context, then assert on the exit code it returns.
 
 ### Dispatcher error handling
 
-The generated dispatcher in `cmd/cmd.go` distinguishes three error paths:
+The generated dispatcher in `cmd/cmd.go` distinguishes five outcomes:
 
-| Returned from exec | What happens |
-| ------------------ | ------------ |
-| `nil`, `ff.ErrHelp`, `ff.ErrNoExec` | Exit 0. `ff.ErrNoExec` fires when a parent command is invoked without a subcommand — help is shown but the process exits cleanly. |
-| `root.ExitError(N)` | Exit N. No `"error: ..."` line is printed. Use this when the command has already reported the outcome (e.g. lint found issues). |
-| Any other `error` | The selected command's help is printed to stderr, then `"error: <message>"`, then exit 1. |
+| Returned from exec                           | What happens                                                                                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `nil`, `ff.ErrNoExec`                        | Exit 0. `ff.ErrNoExec` fires when a parent command is invoked without a subcommand; nothing is printed.                         |
+| `ff.ErrHelp` (`--help`)                      | The selected command's help is printed to stderr, then exit 0.                                                                  |
+| `*root.UsageError` (matches `root.ErrUsage`) | The selected command's help is printed to stderr, then `"error: <message>"`, then exit 2.                                       |
+| `root.ExitError(N)`                          | Exit N. No `"error: ..."` line is printed. Use this when the command has already reported the outcome (e.g. lint found issues). |
+| Any other `error`                            | `"error: <message>"`, then exit 1. No help: the command line was fine, so help would only bury the message.                     |
 
-Parse errors (bad flags) follow the same path as other errors: help is shown before the error message.
+Parse failures (an unknown flag, a bad flag value), an unknown subcommand, and a flag written after a positional argument are usage errors too, so they print help. ff stops reading flags at the first positional argument, so without that last check `myapp serve :80 --verbose` would pass `--verbose` to `serve` as an argument and never set it. Put such a value after `--` to pass it through on purpose.
 
 ### Shared I/O
 
@@ -506,6 +508,22 @@ return root.ExitError(1) // exit 1, no "error:" printed
 
 Use this when the command has already communicated its outcome through its own output — for example, `climax lint` prints the diff before returning `ExitError(1)`, so a redundant error line would be noise.
 
+### Usage errors
+
+Return a `*root.UsageError` when the command line is wrong (a missing or invalid argument, conflicting flags), so the dispatcher prints the command's help above the message:
+
+```go
+// In any command's exec function:
+if len(args) == 0 {
+    return &root.UsageError{Err: errors.New("serve: address required")}
+}
+if err := validate(args[0]); err != nil {
+    return &root.UsageError{Err: fmt.Errorf("serve: %w", err)}
+}
+```
+
+It exits 2, where a runtime failure exits 1, so a script can tell "called it wrong" from "it failed". Every other error is reported without help. `errors.Is(err, root.ErrUsage)` tells the two apart; `errors.AsType[*root.UsageError](err)` recovers the details.
+
 ## Version embedding
 
 The generated `cmd/version/version.go` reads the module version automatically from the Go toolchain's embedded build info. When a binary is installed via `go install` or built from a tagged release, the version is set without any extra build flags:
@@ -516,10 +534,37 @@ myapp version        # prints v1.2.3
 myapp version --json # machine-readable output
 ```
 
-For local or untagged builds, the version defaults to `"dev"`. Override it at link time if needed:
+When the build records no version at all (`-buildvcs=false`, an exported tarball), it reports `devel`. Override it at link time if needed:
 
 ```sh
 go build -ldflags "-X 'github.com/yourname/myapp/cmd/version.Version=v1.2.3'" -o myapp .
 ```
 
-`var Version = "dev"` is a deliberate exception to the no-globals rule: the Go linker's `-ldflags "-X <pkg>.Version=<val>"` mechanism requires a package-level `var`, not a constant or local variable.
+`Commit`, `CommitDate`, `TreeState`, and `BuiltBy` are the matching link-time variables for the VCS fields. A build through the Go module proxy (`go install module@version`, or goreleaser with `gomod.proxy: true`) carries no VCS stamps, so a release build injects them, as climax's own `.goreleaser.yaml` does:
+
+```yaml
+ldflags:
+- -s -w
+- -X {{ .ModulePath }}/cmd/version.Version={{ .Tag }}
+- -X {{ .ModulePath }}/cmd/version.Commit={{ .FullCommit }}
+- -X {{ .ModulePath }}/cmd/version.CommitDate={{ .CommitDate }}
+- -X {{ .ModulePath }}/cmd/version.TreeState={{ .GitTreeState }}
+- -X {{ .ModulePath }}/cmd/version.BuiltBy=goreleaser
+```
+
+Use `{{ .Tag }}` rather than `{{ .Version }}`, which drops the leading `v`. A non-empty link-time value wins over build info. The linker silently ignores `-X` for a variable that does not exist, so check the output of `version` after changing these.
+
+`version` also reports a `Source` line saying where the binary's source came from, so an `unknown` field can be read as expected or as a bug:
+
+| Source (JSON `source`) | Built by                                             | Commit and date from                                                                   |
+| ---------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `release`              | goreleaser or any build with the link-time variables | the link-time variables                                                                |
+| `module`               | `go install` / `go run` `module@version`             | a pseudo-version; for a tag, not embedded (the `Source` line links the proxy's record) |
+| `vcs`                  | `go build` / `go install .` in a checkout            | the toolchain's VCS stamp                                                              |
+| `local`                | `-buildvcs=false`, an exported tarball, no VCS       | nowhere: `unknown`                                                                     |
+
+A `module` build reports `GitTreeState: clean`: `go install module@version` refuses `replace` directives and checks the module zip against `ModuleSum`, so the source is exactly that version's tree.
+
+climax's tests replay a recorded build of each kind through both its own `cmd/version` and the template's copy. `bin/capture-buildinfo.sh` records them; re-run it when the Go toolchain or goreleaser changes what a build embeds.
+
+These package-level `var`s are a deliberate exception to the no-globals rule: the Go linker's `-ldflags "-X <pkg>.<Var>=<val>"` mechanism requires a package-level `var`, not a constant or local variable.

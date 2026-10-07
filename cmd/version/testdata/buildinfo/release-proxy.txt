@@ -1,0 +1,11 @@
+go	go1.27.1
+path	github.com/StevenACoffman/climax
+mod	github.com/StevenACoffman/climax	v0.8.0	h1:/V/mx5lBYxrejteLSTNUxZ1+D1wwTg019N1H75qkvgc=
+dep	github.com/peterbourgon/ff/v4	v4.0.0-beta.1	h1:hV8qRu3V7YfiSMsBSfPfdcznAvPQd3jI5zDddSrDoUc=
+build	-buildmode=exe
+build	-compiler=gc
+build	-ldflags="-s -w -X github.com/StevenACoffman/climax/cmd/version.Version=v0.8.0 -X github.com/StevenACoffman/climax/cmd/version.Commit=3efdf089bc50439f68a59e7eddd9f631c782bba1 -X github.com/StevenACoffman/climax/cmd/version.CommitDate=2026-08-03T02:57:43Z -X github.com/StevenACoffman/climax/cmd/version.TreeState=clean -X github.com/StevenACoffman/climax/cmd/version.BuiltBy=goreleaser"
+build	CGO_ENABLED=0
+build	GOARCH=arm64
+build	GOOS=darwin
+build	GOARM64=v8.0
