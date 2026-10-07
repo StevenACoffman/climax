@@ -79,6 +79,7 @@ func syntheticSourceInfoAllPresent() sourceInfo {
 		cmdHasEnvPrefix:                      true,
 		cmdHasGuard:                          true,
 		cmdHelpOnUsage:                       true,
+		cmdHasFlagGuard:                      true,
 		rootHasStdinField:                    true,
 		rootHasStdinParam:                    true,
 		rootAssignsStdin:                     true,
@@ -1129,8 +1130,15 @@ func TestDetectDrift_roundTrip_versionJSON(t *testing.T) {
 // guard into the template.
 func TestGuardBlockInsertion_matchesTemplate(t *testing.T) {
 	t.Parallel()
-	if !strings.Contains(cmdTemplate, guardBlockInsertion) {
-		t.Errorf("guardBlockInsertion is not in cmd.go.tmpl verbatim:\n%s", guardBlockInsertion)
+	for name, text := range map[string]string{
+		"guardBlockInsertion": guardBlockInsertion,
+		// Inserted with a blank line after it; in the template it ends the file.
+		"misplacedFlagFunc": strings.TrimSuffix(misplacedFlagFunc, "\n"),
+		"runDocAnchor":      runDocAnchor,
+	} {
+		if !strings.Contains(cmdTemplate, text) {
+			t.Errorf("%s is not in cmd.go.tmpl verbatim:\n%s", name, text)
+		}
 	}
 }
 

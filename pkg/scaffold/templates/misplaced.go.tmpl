@@ -8,8 +8,11 @@ package ROOT_PKG
 import "strings"
 
 // MisplacedFlag returns the first argument that looks like a flag ("-x" or
-// "--long"), or "" when none do. The conventional positionals "-" (stdin) and
-// "--" (end-of-flags marker) are not treated as flags. Commands that take
+// "--long"), or "" when none do. A lone "-" (stdin) is not a flag, and a "--"
+// ends the scan: what follows it is meant literally. If ff consumed a leading
+// "--" itself, args starts with what followed it, so a leading dash means the
+// same. The dispatcher already rejects a misplaced flag for every command, so
+// this is only needed for args a command receives some other way. Commands that take
 // positional arguments should call MisplacedFlag(args) and, when it returns a
 // non-empty string, fail with a usage error rather than silently ignoring it:
 //
@@ -17,11 +20,14 @@ import "strings"
 //		return &ROOT_PKG.UsageError{Err: fmt.Errorf("serve: flag %q must come before the arguments", flag)}
 //	}
 func MisplacedFlag(args []string) string {
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		return ""
+	}
 	for _, a := range args {
-		if a == "-" || a == "--" {
-			continue
+		if a == "--" {
+			return ""
 		}
-		if strings.HasPrefix(a, "-") {
+		if len(a) > 1 && a[0] == '-' {
 			return a
 		}
 	}

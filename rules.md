@@ -709,6 +709,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 - `-h` / `--help` at any level causes `Parse` to return `ff.ErrHelp`; `run()` treats this as success.
 - A command with no `Exec` causes `Run` to return `ff.ErrNoExec`; `run()` treats this as success.
 - Unknown subcommand returns a `*root.UsageError`; `run()` in `main.go` owns the exit code.
+- A flag after a positional argument returns a `*root.UsageError`: ff stops reading flags at the first positional, so it would otherwise reach `exec` as an argument. Anything after `--` is passed through literally.
 - The dispatcher prints help for `--help` and usage errors (`errors.Is(err, root.ErrUsage)`) only; runtime failures are reported without help.
 
 ### Post-Parse Initialization

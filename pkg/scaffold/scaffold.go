@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -447,12 +448,42 @@ func registerViaMarkers(info *dispatcherInfo, content, name, importPrefix, paren
 		if lineEnd == -1 {
 			return fmt.Errorf("unexpected: no newline after parent registration in %s", info.path)
 		}
-		insertPos := idx + lineEnd + 1
+		insertPos := afterDescendants(content, idx+lineEnd+1, parentCfgVar)
 		callLine := fmt.Sprintf("\t%s.New(%s)\n", name, parentCfgVar)
 		content = content[:insertPos] + callLine + content[insertPos:]
 	}
 
 	return writeDispatcher(info.path, []byte(content))
+}
+
+// childRegistration matches a line that registers a command under a parent
+// config: `c.New(aCfg)`, or `bCfg := b.New(aCfg)` once b has children of its
+// own. The groups are the captured config (if any) and the config passed in.
+var childRegistration = regexp.MustCompile(`^\s*(?:(\w+)\s*:=\s*)?\w+\.New\((\w+)\)\s*$`)
+
+// afterDescendants returns the offset just past the registrations that follow
+// a parent's registration line at pos and belong under it: those passed
+// parentCfg, and, depth-first, those passed the config of one of them.
+// Inserting a new child there keeps siblings in the order they were added, so
+// --help lists them that way, instead of each new child landing directly under
+// its parent, ahead of the others.
+func afterDescendants(content string, pos int, parentCfg string) int {
+	under := map[string]bool{parentCfg: true}
+	for pos < len(content) {
+		end := strings.IndexByte(content[pos:], '\n')
+		if end < 0 {
+			return pos
+		}
+		m := childRegistration.FindStringSubmatch(content[pos : pos+end])
+		if len(m) < 3 || !under[m[2]] {
+			return pos
+		}
+		if m[1] != "" {
+			under[m[1]] = true
+		}
+		pos += end + 1
+	}
+	return pos
 }
 
 // writeDispatcher gofmts the edited dispatcher, which sorts the import just
@@ -504,9 +535,9 @@ func registerViaAST(info *dispatcherInfo, src []byte, name, importPrefix, parent
 			pcr.lineEnd += len(promotion)
 		}
 
-		// Insert the child command call on the line immediately after the parent.
+		// Insert the child after the parent and the children it already has.
 		callLine := fmt.Sprintf("\t%s.New(%s)\n", name, pcr.cfgVar)
-		src = insertAt(src, pcr.lineEnd, callLine)
+		src = insertAt(src, afterDescendants(string(src), pcr.lineEnd, pcr.cfgVar), callLine)
 	}
 
 	return writeDispatcher(info.path, src)

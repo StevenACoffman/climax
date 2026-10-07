@@ -48,6 +48,14 @@ func TestRun_exitCodes(t *testing.T) {
 			wantError: `"--bogus": unknown flag`,
 			wantHelp:  true,
 		},
+		"flag after an argument": {
+			args: func(*testing.T) []string {
+				return []string{"climax", "add", "serve", ".", "--short", "x"}
+			},
+			wantCode:  exitUsage,
+			wantError: `flag "--short" must come before the arguments`,
+			wantHelp:  true,
+		},
 		"runtime failure": {
 			args: func(t *testing.T) []string {
 				t.Helper()

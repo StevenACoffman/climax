@@ -18,20 +18,57 @@ import (
 	"strings"
 )
 
-// guardBlockInsertion is the unmatched-subcommand guard plus the following
-// r.Command.Run line, exactly as written into cmd.go.tmpl. It is the
+// guardBlockInsertion is the unmatched-subcommand and misplaced-flag guard plus
+// the following r.Command.Run line, exactly as written into cmd.go.tmpl. It is the
 // replacement text of the guard drift patch; keeping it here (rather than
 // inline in runChecks) keeps that function within its maintainability budget.
-const guardBlockInsertion = "\n\t// An unmatched token leaves the selected command a group parent (Exec == nil)\n" +
+const guardBlockInsertion = "\n" +
+	"\t// An unmatched token leaves the selected command a group parent (Exec == nil)\n" +
 	"\t// with a leftover positional. Without this guard it falls through to Run,\n" +
 	"\t// returns ff.ErrNoExec, and exits 0 — indistinguishable from a bare invocation.\n" +
+	"\t// A command that does have an Exec gets its leftovers as arguments, and a\n" +
+	"\t// flag among them was never parsed; that is reported rather than dropped.\n" +
 	"\tif sel := r.Command.GetSelected(); sel.Exec == nil {\n" +
 	"\t\tif rest := sel.Flags.GetArgs(); len(rest) > 0 {\n" +
 	"\t\t\t_, _ = fmt.Fprintf(stderr, \"\\n%s\\n\", ffhelp.Command(sel))\n" +
 	"\t\t\treturn &ROOT_PKG.UsageError{Err: fmt.Errorf(\"%s: unknown subcommand %q\", sel.Name, rest[0])}\n" +
 	"\t\t}\n" +
+	"\t} else if flag := misplacedFlag(sel.Flags.GetArgs()); flag != \"\" {\n" +
+	"\t\t_, _ = fmt.Fprintf(stderr, \"\\n%s\\n\", ffhelp.Command(sel))\n" +
+	"\t\treturn &ROOT_PKG.UsageError{Err: fmt.Errorf(\n" +
+	"\t\t\t\"%s: flag %q must come before the arguments (or after -- to pass it through)\",\n" +
+	"\t\t\tsel.Name, flag)}\n" +
 	"\t}\n" +
-	"\n\tif err := r.Command.Run(ctx); err != nil {"
+	"\n" +
+	"\tif err := r.Command.Run(ctx); err != nil {"
+
+// runDocAnchor starts Run's doc comment in cmd.go.tmpl.
+const runDocAnchor = "// Run parses args and dispatches to the matching command."
+
+// misplacedFlagFunc is the misplacedFlag helper exactly as written into
+// cmd.go.tmpl. The guard drift patch inserts it above Run, since the guard it
+// inserts calls it.
+const misplacedFlagFunc = "// misplacedFlag returns the first of args that looks like a flag, or \"\" when\n" +
+	"// none does. ff stops reading flags at the first positional argument, so a flag\n" +
+	"// written after one would otherwise reach exec as an argument and be silently\n" +
+	"// ignored. A \"--\" ends the scan: what follows it is meant literally. When ff\n" +
+	"// consumed a leading \"--\" itself, args starts with what followed it, which is\n" +
+	"// the only way a leftover can start with a dash.\n" +
+	"func misplacedFlag(args []string) string {\n" +
+	"\tif len(args) > 0 && strings.HasPrefix(args[0], \"-\") {\n" +
+	"\t\treturn \"\"\n" +
+	"\t}\n" +
+	"\tfor _, a := range args {\n" +
+	"\t\tif a == \"--\" {\n" +
+	"\t\t\treturn \"\"\n" +
+	"\t\t}\n" +
+	"\t\tif len(a) > 1 && a[0] == '-' {\n" +
+	"\t\t\treturn a\n" +
+	"\t\t}\n" +
+	"\t}\n" +
+	"\treturn \"\"\n" +
+	"}\n" +
+	"\n"
 
 // DriftItem describes a single structural difference between a climax source
 // file and the corresponding scaffold template.
@@ -76,6 +113,7 @@ type sourceInfo struct {
 	cmdHasEnvPrefix  bool
 	cmdHasGuard      bool
 	cmdHelpOnUsage   bool
+	cmdHasFlagGuard  bool
 	// cmd/root/root.go properties
 	rootHasStdinField bool
 	rootHasStdinParam bool
@@ -177,6 +215,7 @@ func DetectDrift(climaxDir string) ([]DriftItem, error) {
 		cmdHasEnvPrefix:    astHasCall(cmdFile, "Run", "WithEnvVarPrefix"),
 		cmdHasGuard:        astHasCall(cmdFile, "Run", "GetArgs"),
 		cmdHelpOnUsage:     astCallPassesIdent(cmdFile, "Run", "errors", "Is", "ErrUsage"),
+		cmdHasFlagGuard:    astHasFuncDecl(cmdFile, "misplacedFlag"),
 		rootHasStdinField:  astStructHasField(rootFile, "Config", "Stdin"),
 		rootHasStdinParam:  astFuncHasIOReaderParam(rootFile, "New"),
 		rootAssignsStdin:   astFuncAssignsField(rootFile, "New", "Stdin"),
@@ -422,6 +461,7 @@ func cmdChecks(src *sourceInfo, tmpl *templateSet) []check {
 				templateFile: "cmd.go.tmpl",
 				replacements: []replacePair{
 					{"\n\tif err := r.Command.Run(ctx); err != nil {", guardBlockInsertion},
+					{runDocAnchor, misplacedFlagFunc + runDocAnchor},
 				},
 			},
 		},
@@ -430,6 +470,12 @@ func cmdChecks(src *sourceInfo, tmpl *templateSet) []check {
 			prop:   "help printed only for errors matching ErrUsage",
 			inSrc:  src.cmdHelpOnUsage,
 			inTmpl: strings.Contains(tmpl.cmd, "errors.Is(err, ROOT_PKG.ErrUsage)"),
+		},
+		{
+			tmpl:   "cmd",
+			prop:   "misplaced-flag guard (a flag after an argument is otherwise ignored)",
+			inSrc:  src.cmdHasFlagGuard,
+			inTmpl: strings.Contains(tmpl.cmd, "func misplacedFlag("),
 		},
 	}
 }

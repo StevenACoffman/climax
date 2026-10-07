@@ -498,8 +498,13 @@ func TestGoBuild_helpOnlyForUsageErrors(t *testing.T) {
 		wantHelp bool
 		wantMsg  string
 	}{
-		"usage error":        {[]string{"serve"}, 2, true, "serve: address required"},
-		"runtime error":      {[]string{"serve", ":80"}, 1, false, "serve: connection refused"},
+		"usage error":   {[]string{"serve"}, 2, true, "serve: address required"},
+		"runtime error": {[]string{"serve", ":80"}, 1, false, "serve: connection refused"},
+		"flag after argument": {
+			[]string{"serve", ":80", "--verbose"},
+			2, true,
+			`flag "--verbose" must come before the arguments`,
+		},
 		"unknown subcommand": {[]string{"nosuch"}, 2, true, `unknown subcommand "nosuch"`},
 		"bare invocation":    {nil, 0, false, ""},
 	}

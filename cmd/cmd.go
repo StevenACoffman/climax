@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
@@ -60,11 +61,18 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	// An unmatched token leaves the selected command a group parent (Exec == nil)
 	// with a leftover positional. Without this guard it falls through to Run,
 	// returns ff.ErrNoExec, and exits 0 — indistinguishable from a bare invocation.
+	// A command that does have an Exec gets its leftovers as arguments, and a
+	// flag among them was never parsed; that is reported rather than dropped.
 	if sel := r.Command.GetSelected(); sel.Exec == nil {
 		if rest := sel.Flags.GetArgs(); len(rest) > 0 {
 			_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(sel))
 			return &root.UsageError{Err: fmt.Errorf("%s: unknown subcommand %q", sel.Name, rest[0])}
 		}
+	} else if flag := misplacedFlag(sel.Flags.GetArgs()); flag != "" {
+		_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(sel))
+		return &root.UsageError{Err: fmt.Errorf(
+			"%s: flag %q must come before the arguments (or after -- to pass it through)",
+			sel.Name, flag)}
 	}
 
 	if err := r.Command.Run(ctx); err != nil {
@@ -78,4 +86,25 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	return nil
+}
+
+// misplacedFlag returns the first of args that looks like a flag, or "" when
+// none does. ff stops reading flags at the first positional argument, so a flag
+// written after one would otherwise reach exec as an argument and be silently
+// ignored. A "--" ends the scan: what follows it is meant literally. When ff
+// consumed a leading "--" itself, args starts with what followed it, which is
+// the only way a leftover can start with a dash.
+func misplacedFlag(args []string) string {
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		return ""
+	}
+	for _, a := range args {
+		if a == "--" {
+			return ""
+		}
+		if len(a) > 1 && a[0] == '-' {
+			return a
+		}
+	}
+	return ""
 }

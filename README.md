@@ -414,7 +414,7 @@ The generated dispatcher in `cmd/cmd.go` distinguishes five outcomes:
 | `root.ExitError(N)`                          | Exit N. No `"error: ..."` line is printed. Use this when the command has already reported the outcome (e.g. lint found issues). |
 | Any other `error`                            | `"error: <message>"`, then exit 1. No help: the command line was fine, so help would only bury the message.                     |
 
-Parse failures (an unknown flag, a bad flag value) and an unknown subcommand are usage errors too, so they print help.
+Parse failures (an unknown flag, a bad flag value), an unknown subcommand, and a flag written after a positional argument are usage errors too, so they print help. ff stops reading flags at the first positional argument, so without that last check `myapp serve :80 --verbose` would pass `--verbose` to `serve` as an argument and never set it. Put such a value after `--` to pass it through on purpose.
 
 ### Shared I/O
 

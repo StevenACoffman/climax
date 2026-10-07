@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -85,12 +86,13 @@ func TestScaffold_initThenAddStaysClean(t *testing.T) {
 		if rapid.Bool().Draw(t, "stripMarkers") {
 			stripMarkers(t, filepath.Join(dir, "cmd", "cmd.go"))
 		}
-		addCommands(t, dir, importPrefix, opts.RootPkg)
+		parents := addCommands(t, dir, importPrefix, opts.RootPkg)
 
 		if err := scaffold.IsClimaxApp(dir); err != nil {
 			t.Fatalf("IsClimaxApp: %v", err)
 		}
 		assertLintClean(t, dir)
+		assertSiblingOrder(t, filepath.Join(dir, "cmd", "cmd.go"), parents)
 		assertGofmtClean(t, dir)
 	})
 }
@@ -120,8 +122,11 @@ func drawInitOptions(t *rapid.T, importPrefix string) scaffold.InitOptions {
 // addCommands adds up to 10 distinct commands — enough for some runs to cross
 // the 8-registration split into register() — each either under the root or
 // under a command added before it.
-func addCommands(t *rapid.T, dir, importPrefix, rootPkg string) {
+//
+// It returns each added command's parent ("" for the root), in add order.
+func addCommands(t *rapid.T, dir, importPrefix, rootPkg string) []struct{ name, parent string } {
 	t.Helper()
+	var order []struct{ name, parent string }
 	cmds := rapid.SliceOfNDistinct(pkgName(rootPkg), 0, 10, rapid.ID[string]).
 		Draw(t, "commands")
 	var added []string
@@ -137,6 +142,35 @@ func addCommands(t *rapid.T, dir, importPrefix, rootPkg string) {
 			t.Fatalf("AddCommand(%q, %+v): %v", name, add, err)
 		}
 		added = append(added, name)
+		order = append(order, struct{ name, parent string }{name, add.Parent})
+	}
+	return order
+}
+
+// assertSiblingOrder fails unless commands added under the same parent are
+// registered in the dispatcher in the order they were added, which is the
+// order --help lists them in.
+func assertSiblingOrder(t *rapid.T, cmdGo string, added []struct{ name, parent string }) {
+	t.Helper()
+	src, err := os.ReadFile(cmdGo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastByParent := map[string]int{}
+	for _, c := range added {
+		at := regexp.MustCompile(`\b` + c.name + `\.New\(`).FindIndex(src)
+		if at == nil {
+			t.Fatalf("%s is not registered in cmd.go:\n%s", c.name, src)
+		}
+		if prev, ok := lastByParent[c.parent]; ok && at[0] < prev {
+			t.Fatalf(
+				"%s is registered before an earlier sibling under %q:\n%s",
+				c.name,
+				c.parent,
+				src,
+			)
+		}
+		lastByParent[c.parent] = at[0]
 	}
 }
 

@@ -28,8 +28,9 @@ func TestRun_helpOnlyForUsageErrors(t *testing.T) {
 	cases := map[string]struct {
 		args      func(t *testing.T) []string
 		wantHelp  bool
-		wantUsage bool  // errors.Is(err, root.ErrUsage)
-		wantErr   error // a sentinel the error must also match, or nil
+		wantUsage bool   // errors.Is(err, root.ErrUsage)
+		wantErr   error  // a sentinel the error must also match, or nil
+		wantMsg   string // text the error message must contain, or ""
 	}{
 		"unknown subcommand": {
 			args:     func(*testing.T) []string { return []string{"nosuch"} },
@@ -61,6 +62,26 @@ func TestRun_helpOnlyForUsageErrors(t *testing.T) {
 		"flag out of range": {
 			args:     func(*testing.T) []string { return []string{"mango", "--section", "9"} },
 			wantHelp: true, wantUsage: true,
+		},
+		"flag after an argument": {
+			args: func(*testing.T) []string {
+				return []string{"add", "serve", ".", "--short", "x"}
+			},
+			wantHelp: true, wantUsage: true,
+			wantMsg: `flag "--short" must come before the arguments`,
+		},
+		"flag after --": {
+			// "--" makes everything after it literal, so the guard stays out of
+			// the way and add sees "--" as its path argument.
+			args:    func(*testing.T) []string { return []string{"add", "serve", "--", "--x"} },
+			wantMsg: "not a climax app root",
+		},
+		"leading -- passes a dash through": {
+			// ff consumes the leading "--", so add receives "-x" as its name;
+			// add rejects that itself, not the misplaced-flag guard.
+			args:     func(*testing.T) []string { return []string{"add", "--", "-x"} },
+			wantHelp: true, wantUsage: true,
+			wantMsg: `command name "-x" must start with a letter`,
 		},
 		"--help": {
 			args:     func(*testing.T) []string { return []string{"add", "--help"} },
@@ -108,10 +129,20 @@ func TestRun_helpOnlyForUsageErrors(t *testing.T) {
 			if got := errors.Is(err, root.ErrUsage); got != tc.wantUsage {
 				t.Errorf("errors.Is(err, ErrUsage) = %v, want %v (err: %v)", got, tc.wantUsage, err)
 			}
-			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
-				t.Errorf("errors.Is(%v, %v) = false", err, tc.wantErr)
-			}
+			assertMatches(t, err, tc.wantErr, tc.wantMsg)
 		})
+	}
+}
+
+// assertMatches fails unless err matches want through errors.Is (when want is
+// set) and its message contains msg (when msg is set).
+func assertMatches(t *testing.T, err, want error, msg string) {
+	t.Helper()
+	if want != nil && !errors.Is(err, want) {
+		t.Errorf("errors.Is(%v, %v) = false", err, want)
+	}
+	if msg != "" && !strings.Contains(err.Error(), msg) {
+		t.Errorf("error %q does not contain %q", err, msg)
 	}
 }
 
